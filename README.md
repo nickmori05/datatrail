@@ -1,5 +1,7 @@
 # Datatrail
 
+[![Tests](https://github.com/nickmori05/datatrail/actions/workflows/tests.yml/badge.svg)](https://github.com/nickmori05/datatrail/actions/workflows/tests.yml)
+
 Investigate what changed between CSV exports and trace each record back to its source.
 
 The sample workflow compares two supplier exports: one supplier moved cities,
@@ -81,6 +83,24 @@ and invalid query parameters `422`. Storage errors return `503`. The upload
 size is checked as bytes arrive, even without a reliable Content-Length.
 The API never fetches remote URLs or opens a client-supplied server file path.
 
+## Docker
+
+```sh
+docker compose up --build -d --wait
+curl http://127.0.0.1:8000/health/ready
+docker compose exec api python -m datatrail datasets
+docker compose down
+```
+
+The API binds to localhost on port 8000. Set `DATATRAIL_PORT=8001` if that port
+is already used. The container runs as a non-root user with a read-only root
+filesystem and a writable `/data` volume. The CLI inside the container shares
+the API's database. Your ordinary local Python database is separate.
+
+The named `datatrail-data` volume survives container recreation and
+`docker compose down`. Adding `--volumes` to `down` deletes that stored data.
+There is no background daemon or watcher outside the API container.
+
 ## Import rules
 
 - UTF-8 CSV, with an optional BOM; comma delimiter and ordinary CSV quoting.
@@ -159,3 +179,16 @@ documented CLI demo.
 
 API tests cover upload limits, exact source downloads, response codes, storage
 failures, shared CLI/API data, and persistence after restarting the application.
+
+With a local Docker runtime and Compose available:
+
+```sh
+python3 scripts/docker_smoke.py
+```
+
+The integration check creates its own temporary Compose project, image, database
+volume, and dynamically assigned localhost port. It exercises the real HTTP
+server, duplicate upload handling, quality reports, diffs, exact source downloads,
+CLI/API interoperability, and persistence across container recreation. It removes
+its containers, volume, network, and image afterward. Regular workspace data is
+not used. GitHub Actions runs this check plus the Python suite on 3.11 and 3.14.
