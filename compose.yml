@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    image: ${DATATRAIL_IMAGE:-datatrail:local}
+    init: true
+    ports:
+      - "127.0.0.1:${DATATRAIL_PORT:-8000}:8000"
+    volumes:
+      - datatrail-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+volumes:
+  datatrail-data:

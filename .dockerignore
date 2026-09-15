@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!requirements.txt
+!datatrail/
+!datatrail/*.py
+!datatrail/schema.sql
+!examples/
+!examples/*.csv
