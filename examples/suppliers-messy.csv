@@ -1,0 +1,6 @@
+supplier_id,name,city,status
+S001,Northline Parts,Denver,active
+S002,Harbor Tools,Boston,active
+ S002 ,Harbor Tools,Chicago,active
+,Unknown Supplier,Austin,active
+S005,Short Row
