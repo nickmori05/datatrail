@@ -39,6 +39,48 @@ imports. The default database is `.local/datatrail.sqlite3` relative to the
 working directory. Set `DATATRAIL_DB` or put `--database PATH` before the command
 to use another file. Local data is excluded from Git.
 
+## HTTP API
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m uvicorn datatrail.api:app --host 127.0.0.1 --port 8000
+```
+
+Interactive API docs are at `http://127.0.0.1:8000/docs`. The API and CLI use the
+same database setting. This version is for one trusted local workspace: there
+is no authentication or per-user isolation. Keep it bound to localhost.
+
+```sh
+curl -i -X POST 'http://127.0.0.1:8000/datasets/suppliers/imports?key=supplier_id&source_name=before.csv' \
+  -H 'Content-Type: text/csv' --data-binary @examples/suppliers-before.csv
+curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
+```
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/datasets/{name}/imports?key=column&source_name=file.csv` | Upload raw CSV bytes |
+| GET | `/datasets` | List datasets |
+| GET | `/datasets/{name}/imports` | List snapshots, newest first |
+| GET | `/imports/{id}` | Import metadata and quality counts |
+| GET | `/imports/{id}/records?flagged=true` | Inspect questionable rows |
+| GET | `/imports/{id}/source` | Download exact original bytes |
+| GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
+| GET | `/diff?before=1&after=2` | Compare clean snapshots |
+| GET | `/health/live` | Check that the API is responding |
+| GET | `/health/ready` | Check that the import table is readable |
+
+Readiness does not prove writes will succeed. Lists and diffs accept `limit` and
+`offset` with the same bounds as the CLI. Uploads return `201`, or `200` for an
+exact retry, with a `Location` header pointing to the import. Flagged rows still
+produce a saved import; inspect `rejected_count` in the response.
+
+Invalid CSV returns `400`, missing resources `404`, conflicting dataset keys or
+unclean comparisons `409`, oversized uploads `413`, wrong content type `415`,
+and invalid query parameters `422`. Storage errors return `503`. The upload
+size is checked as bytes arrive, even without a reliable Content-Length.
+The API never fetches remote URLs or opens a client-supplied server file path.
+
 ## Import rules
 
 - UTF-8 CSV, with an optional BOM; comma delimiter and ordinary CSV quoting.
@@ -106,10 +148,14 @@ those boundaries, a database migration strategy, and retention controls.
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 Tests use temporary databases and synthetic fixtures. They exercise duplicate
 handling, source preservation, multiline CSVs, atomic rollback, concurrent
 retries, concurrent version allocation, schema changes, pagination, and the
 documented CLI demo.
+
+API tests cover upload limits, exact source downloads, response codes, storage
+failures, shared CLI/API data, and persistence after restarting the application.
