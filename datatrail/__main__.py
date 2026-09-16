@@ -21,6 +21,8 @@ def parser():
     datasets = commands.add_parser("datasets", help="List datasets")
     imports = commands.add_parser("imports", help="List dataset snapshots")
     imports.add_argument("dataset")
+    show = commands.add_parser("show", help="Show one import's source details and quality counts")
+    show.add_argument("import_id", type=int)
     records = commands.add_parser("records", help="Inspect original and normalized values")
     records.add_argument("import_id", type=int)
     records.add_argument("--flagged", action="store_true")
@@ -51,6 +53,8 @@ def main(argv=None):
             result = store.datasets(args.limit, args.offset)
         elif args.command == "imports":
             result = store.imports(args.dataset, args.limit, args.offset)
+        elif args.command == "show":
+            result = store.get_import(args.import_id)
         elif args.command == "records":
             result = store.records(args.import_id, flagged=args.flagged, limit=args.limit, offset=args.offset)
         elif args.command == "trace":

@@ -30,6 +30,7 @@ python3 -m datatrail import suppliers examples/suppliers-before.csv --key suppli
 python3 -m datatrail import suppliers examples/suppliers-after.csv --key supplier_id
 python3 -m datatrail datasets
 python3 -m datatrail imports suppliers
+python3 -m datatrail show 1
 python3 -m datatrail diff 1 2
 python3 -m datatrail trace suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
@@ -40,6 +41,11 @@ The numeric IDs above assume a fresh database; use the IDs returned by your
 imports. The default database is `.local/datatrail.sqlite3` relative to the
 working directory. Set `DATATRAIL_DB` or put `--database PATH` before the command
 to use another file. Local data is excluded from Git.
+
+`show ID` prints one import's source name, SHA-256 hash, timestamp, columns, and
+accepted/flagged record counts as JSON. It does not re-import the file or print
+its contents. Inspecting an import with flagged rows still exits `0`; a missing
+ID exits `2`.
 
 ## HTTP API
 
