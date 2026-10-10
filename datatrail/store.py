@@ -10,6 +10,7 @@ from .errors import Conflict, InvalidInput, NotFound
 from .ingest import parse_csv
 
 
+CHANGE_KINDS = ("added", "removed", "changed")
 IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, i.version, i.source_name,
     i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
 
@@ -19,6 +20,14 @@ def page_args(limit: int, offset: int):
         raise InvalidInput("Limit must be between 1 and 1000.")
     if type(offset) is not int or offset < 0:
         raise InvalidInput("Offset must be a nonnegative integer.")
+
+
+def change_kinds(kinds) -> list[str]:
+    if not kinds:
+        return list(CHANGE_KINDS)
+    if any(kind not in CHANGE_KINDS for kind in kinds):
+        raise InvalidInput("Change kinds must be added, removed or changed.")
+    return [kind for kind in CHANGE_KINDS if kind in kinds]
 
 
 def import_dict(row) -> dict:
@@ -156,8 +165,9 @@ class Store:
                    LIMIT ? OFFSET ?""", (dataset, key, limit, offset)
             )]
 
-    def diff(self, before_id: int, after_id: int, limit=100, offset=0) -> dict:
+    def diff(self, before_id: int, after_id: int, limit=100, offset=0, kinds=None) -> dict:
         page_args(limit, offset)
+        kinds = change_kinds(kinds)
         with closing(self.connect()) as connection:
             before = self._import(connection, before_id)
             after = self._import(connection, after_id)
@@ -179,7 +189,7 @@ class Store:
                 "unchanged" if left["data"] == right["data"] else "changed"
             )
             counts[kind] += 1
-            if kind == "unchanged":
+            if kind not in kinds:
                 continue
             if offset <= total < offset + limit:
                 old_data = left["data"] if left else {}
@@ -194,4 +204,4 @@ class Store:
         return {"before_id": before_id, "after_id": after_id, "counts": counts,
                 "schema": {"added": sorted(set(after["headers"]) - set(before["headers"])),
                            "removed": sorted(set(before["headers"]) - set(after["headers"]))},
-                "changes": changes, "total_changes": total, "limit": limit, "offset": offset}
+                "kinds": kinds, "changes": changes, "total_changes": total, "limit": limit, "offset": offset}

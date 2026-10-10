@@ -59,6 +59,20 @@ class CliTests(unittest.TestCase):
         _, output, _ = self.call("imports", "suppliers")
         self.assertEqual(len(json.loads(output)), 2)
 
+    def test_diff_kind_option_limits_listed_changes(self):
+        ids = []
+        for fixture in ("suppliers-before.csv", "suppliers-after.csv"):
+            _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+            ids.append(str(json.loads(output)["id"]))
+        code, output, errors = self.call("diff", *ids, "--kind", "changed")
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        self.assertEqual([change["kind"] for change in result["changes"]], ["changed"])
+        self.assertEqual(result["counts"], {"added": 1, "removed": 1, "changed": 1, "unchanged": 1})
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            main(["--database", str(self.database), "diff", *ids, "--kind", "unchanged"])
+        self.assertEqual(error.exception.code, 2)
+
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],
                                 cwd=ROOT, capture_output=True, text=True, timeout=30)

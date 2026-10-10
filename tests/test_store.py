@@ -105,6 +105,24 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(page["changes"][0]["key"], "C")
         self.assertEqual(page["total_changes"], 3)
 
+    def test_diff_kind_filter_keeps_full_counts_and_paginates_matching_changes(self):
+        before = self.ingest(b"id,name,city\nA,Ada,Boston\nB,Bob,Denver\nC,Cam,Austin\nE,Eve,Omaha\n")
+        after = self.ingest(b"id,name,city\nA,Ada,Boston\nB,Bob,Chicago\nD,Dee,Reno\nF,Fay,Tulsa\n")
+        full = self.store.diff(before["id"], after["id"])
+        added = self.store.diff(before["id"], after["id"], kinds=["added"])
+        self.assertEqual(added["counts"], full["counts"])
+        self.assertEqual(added["kinds"], ["added"])
+        self.assertEqual([change["key"] for change in added["changes"]], ["D", "F"])
+        self.assertEqual(added["total_changes"], 2)
+        page = self.store.diff(before["id"], after["id"], limit=1, offset=1, kinds=["removed", "changed"])
+        self.assertEqual(page["kinds"], ["removed", "changed"])
+        self.assertEqual(page["total_changes"], 3)
+        self.assertEqual(page["changes"][0]["key"], "C")
+        self.assertEqual(full["kinds"], ["added", "removed", "changed"])
+        for kinds in (["unchanged"], ["moved"]):
+            with self.assertRaisesRegex(InvalidInput, "Change kinds"):
+                self.store.diff(before["id"], after["id"], kinds=kinds)
+
     def test_diff_blocks_flagged_inputs_instead_of_reporting_false_deletions(self):
         clean = self.ingest()
         dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")

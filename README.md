@@ -74,7 +74,7 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 | GET | `/imports/{id}/records?flagged=true` | Inspect questionable rows |
 | GET | `/imports/{id}/source` | Download exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
-| GET | `/diff?before=1&after=2` | Compare clean snapshots |
+| GET | `/diff?before=1&after=2&kind=changed` | Compare clean snapshots |
 | GET | `/health/live` | Check that the API is responding |
 | GET | `/health/ready` | Check that the import table is readable |
 
@@ -144,6 +144,11 @@ reports added, removed, changed, and unchanged counts, plus field-level changes
 and the original record numbers. Missing fields are JSON `null`; empty strings
 remain `""`. Schema additions and removals are reported separately. Column and
 row order do not affect comparison.
+
+`--kind added`, `--kind removed`, or `--kind changed` (repeatable; `kind=` in the
+API) lists only those changes. Summary counts still cover every key, while
+`total_changes` and pagination apply to the filtered list. Unchanged records are
+never listed.
 
 Lists accept `--limit` (1–1,000, default 100) and `--offset`. Diffs keep full
 summary counts while paginating changed records in key order. Trace results

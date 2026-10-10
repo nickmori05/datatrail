@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 import sqlite3
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -118,8 +119,9 @@ def create_app(database: Path | None = None) -> FastAPI:
         return store.trace(dataset, key, limit, offset)
 
     @app.get("/diff")
-    def diff(before: int, after: int, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
-        return store.diff(before, after, limit, offset)
+    def diff(before: int, after: int, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
+             kind: list[Literal["added", "removed", "changed"]] = Query(default=[])):
+        return store.diff(before, after, limit, offset, kinds=kind)
 
     return app
 
