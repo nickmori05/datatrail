@@ -7,7 +7,7 @@ import sys
 
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import MAX_BYTES
-from .store import Store
+from .store import CHANGE_KINDS, Store
 
 
 def parser():
@@ -32,7 +32,11 @@ def parser():
     diff = commands.add_parser("diff", help="Compare two clean snapshots of the same dataset")
     diff.add_argument("before", type=int)
     diff.add_argument("after", type=int)
-    for command in (datasets, imports, records, trace, diff):
+    changes = commands.add_parser("changes", help="Compare a dataset's two newest clean snapshots")
+    changes.add_argument("dataset")
+    for command in (diff, changes):
+        command.add_argument("--kind", action="append", choices=CHANGE_KINDS, help="Only list this kind of change; repeatable")
+    for command in (datasets, imports, records, trace, diff, changes):
         command.add_argument("--limit", type=int, default=100)
         command.add_argument("--offset", type=int, default=0)
     return root
@@ -59,8 +63,10 @@ def main(argv=None):
             result = store.records(args.import_id, flagged=args.flagged, limit=args.limit, offset=args.offset)
         elif args.command == "trace":
             result = store.trace(args.dataset, args.key, args.limit, args.offset)
+        elif args.command == "changes":
+            result = store.latest_changes(args.dataset, args.limit, args.offset, kinds=args.kind)
         else:
-            result = store.diff(args.before, args.after, args.limit, args.offset)
+            result = store.diff(args.before, args.after, args.limit, args.offset, kinds=args.kind)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return code
     except (InvalidInput, NotFound, Conflict, OSError, sqlite3.Error) as error:

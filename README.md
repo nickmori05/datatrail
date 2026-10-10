@@ -19,8 +19,9 @@ cd datatrail
 python3 scripts/demo.py
 ```
 
-The demo uses a temporary database, prints the comparison, flagged records, and
-the history of supplier `S002`, then removes its temporary files. All example
+The demo uses a temporary database, prints the comparison, flagged records, the
+history of supplier `S002`, and the latest clean changes (skipping the messy
+export), then removes its temporary files. All example
 suppliers are fictional.
 
 For a persistent workspace:
@@ -32,6 +33,7 @@ python3 -m datatrail datasets
 python3 -m datatrail imports suppliers
 python3 -m datatrail show 1
 python3 -m datatrail diff 1 2
+python3 -m datatrail changes suppliers
 python3 -m datatrail trace suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
@@ -74,7 +76,8 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 | GET | `/imports/{id}/records?flagged=true` | Inspect questionable rows |
 | GET | `/imports/{id}/source` | Download exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
-| GET | `/diff?before=1&after=2` | Compare clean snapshots |
+| GET | `/diff?before=1&after=2&kind=changed` | Compare clean snapshots |
+| GET | `/datasets/{name}/changes?kind=added` | Compare the two newest clean snapshots |
 | GET | `/health/live` | Check that the API is responding |
 | GET | `/health/ready` | Check that the import table is readable |
 
@@ -145,6 +148,18 @@ and the original record numbers. Missing fields are JSON `null`; empty strings
 remain `""`. Schema additions and removals are reported separately. Column and
 row order do not affect comparison.
 
+`--kind added`, `--kind removed`, or `--kind changed` (repeatable; `kind=` in the
+API) lists only those changes. Summary counts still cover every key, while
+`total_changes` and pagination apply to the filtered list. Unchanged records are
+never listed.
+
+`changes DATASET` compares the dataset's two newest clean snapshots without
+looking up import IDs first. It returns the same diff plus `before_version`,
+`after_version`, and `skipped_flagged`: newer flagged imports that were left out
+of the comparison. Those are listed so a broken latest export is not mistaken
+for "nothing changed". Fewer than two clean snapshots returns a conflict (`409`
+in the API).
+
 Lists accept `--limit` (1–1,000, default 100) and `--offset`. Diffs keep full
 summary counts while paginating changed records in key order. Trace results
 are newest-version first; records retain source order. An empty result page
@@ -194,7 +209,8 @@ python3 scripts/docker_smoke.py
 
 The integration check creates its own temporary Compose project, image, database
 volume, and dynamically assigned localhost port. It exercises the real HTTP
-server, duplicate upload handling, quality reports, diffs, exact source downloads,
-CLI/API interoperability, and persistence across container recreation. It removes
-its containers, volume, network, and image afterward. Regular workspace data is
+server, duplicate upload handling, quality reports, diffs, latest-change lookups,
+exact source downloads, CLI/API interoperability, and persistence across
+container recreation. It removes its containers, volume, network, and image
+afterward. Regular workspace data is
 not used. GitHub Actions runs this check plus the Python suite on 3.11 and 3.14.

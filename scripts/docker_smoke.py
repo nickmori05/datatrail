@@ -60,11 +60,14 @@ def main():
         assert messy["rejected_count"] == 4, messy
         assert len(request(base, f"/imports/{messy['id']}/records?flagged=true")) == 4
         request(base, f"/diff?before={before['id']}&after={messy['id']}", expected=409)
+        latest = request(base, "/datasets/suppliers/changes?kind=changed")
+        assert (latest["before_id"], latest["after_id"]) == (before["id"], after["id"]), latest
+        assert [item["id"] for item in latest["skipped_flagged"]] == [messy["id"]], latest
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert datasets[0]["import_count"] == 3, datasets
-        print("HTTP imports, retries, quality checks, diffs, provenance and CLI reads passed.", flush=True)
+        print("HTTP imports, retries, quality checks, diffs, latest changes, provenance and CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()
