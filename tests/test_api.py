@@ -62,6 +62,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["counts"]["changed"], 1)
         self.assertEqual(self.client.get("/diff", params={**params, "kind": "unchanged"}).status_code, 422)
 
+    def test_latest_changes_endpoint_skips_flagged_snapshots(self):
+        self.assertEqual(self.client.get("/datasets/suppliers/changes").status_code, 404)
+        self.upload(b"id,name\nA,Ada\nB,Bob\n")
+        self.assertEqual(self.client.get("/datasets/suppliers/changes").status_code, 409)
+        self.upload(b"id,name\nA,Ada\nC,Cam\n")
+        dirty = self.upload(b"id,name\nA,Ada\nA,Other\n").json()
+        response = self.client.get("/datasets/suppliers/changes", params={"kind": "added"})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 2))
+        self.assertEqual([item["id"] for item in result["skipped_flagged"]], [dirty["id"]])
+        self.assertEqual([change["key"] for change in result["changes"]], ["C"])
+        self.assertEqual(result["counts"]["removed"], 1)
+
     def test_flagged_import_is_saved_but_cannot_be_compared(self):
         clean = self.upload().json()
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n")

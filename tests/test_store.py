@@ -123,6 +123,30 @@ class StoreTests(unittest.TestCase):
             with self.assertRaisesRegex(InvalidInput, "Change kinds"):
                 self.store.diff(before["id"], after["id"], kinds=kinds)
 
+    def test_latest_changes_compares_newest_clean_snapshots_and_reports_skipped_flags(self):
+        self.ingest(b"id,name\nA,Ada\n")
+        before = self.ingest(b"id,name\nA,Ada\nB,Bob\n")
+        after = self.ingest(b"id,name\nA,Ada Lovelace\nB,Bob\n")
+        dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")
+        result = self.store.latest_changes("suppliers")
+        self.assertEqual((result["before_id"], result["after_id"]), (before["id"], after["id"]))
+        self.assertEqual((result["before_version"], result["after_version"]), (2, 3))
+        self.assertEqual(result["skipped_flagged"], [{"id": dirty["id"], "version": 4, "rejected_count": 2}])
+        self.assertEqual(result["counts"], {"added": 0, "removed": 0, "changed": 1, "unchanged": 1})
+        self.assertEqual(result, {**self.store.diff(before["id"], after["id"]), "dataset": "suppliers",
+                                  "before_version": 2, "after_version": 3, "skipped_flagged": result["skipped_flagged"]})
+        self.assertEqual(self.store.latest_changes("suppliers", kinds=["added"])["changes"], [])
+
+    def test_latest_changes_needs_two_clean_snapshots(self):
+        with self.assertRaises(NotFound):
+            self.store.latest_changes("suppliers")
+        self.ingest()
+        self.ingest(b"id,name\nA,Ada\nA,Other\n")
+        with self.assertRaisesRegex(Conflict, "two clean snapshots"):
+            self.store.latest_changes("suppliers")
+        with self.assertRaises(InvalidInput):
+            self.store.latest_changes("suppliers", kinds=["unchanged"])
+
     def test_diff_blocks_flagged_inputs_instead_of_reporting_false_deletions(self):
         clean = self.ingest()
         dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")
