@@ -27,7 +27,9 @@ def main():
         comparison = cli("diff", str(before["id"]), str(after["id"]))
         flags = cli("records", str(dirty["id"]), "--flagged")
         trail = cli("trace", "suppliers", "S002")
-        print(json.dumps({"comparison": comparison, "flagged_records": flags, "supplier_trail": trail}, indent=2))
+        latest = cli("changes", "suppliers", "--kind", "changed")
+        print(json.dumps({"comparison": comparison, "flagged_records": flags, "supplier_trail": trail,
+                          "latest_changes": latest}, indent=2))
 
 
 if __name__ == "__main__":

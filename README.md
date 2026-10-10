@@ -19,8 +19,9 @@ cd datatrail
 python3 scripts/demo.py
 ```
 
-The demo uses a temporary database, prints the comparison, flagged records, and
-the history of supplier `S002`, then removes its temporary files. All example
+The demo uses a temporary database, prints the comparison, flagged records, the
+history of supplier `S002`, and the latest clean changes (skipping the messy
+export), then removes its temporary files. All example
 suppliers are fictional.
 
 For a persistent workspace:
@@ -208,7 +209,8 @@ python3 scripts/docker_smoke.py
 
 The integration check creates its own temporary Compose project, image, database
 volume, and dynamically assigned localhost port. It exercises the real HTTP
-server, duplicate upload handling, quality reports, diffs, exact source downloads,
-CLI/API interoperability, and persistence across container recreation. It removes
-its containers, volume, network, and image afterward. Regular workspace data is
+server, duplicate upload handling, quality reports, diffs, latest-change lookups,
+exact source downloads, CLI/API interoperability, and persistence across
+container recreation. It removes its containers, volume, network, and image
+afterward. Regular workspace data is
 not used. GitHub Actions runs this check plus the Python suite on 3.11 and 3.14.

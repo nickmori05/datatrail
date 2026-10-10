@@ -94,3 +94,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(demo["comparison"]["counts"], {"added": 1, "removed": 1, "changed": 1, "unchanged": 1})
         self.assertEqual(len(demo["flagged_records"]), 4)
         self.assertEqual([row["version"] for row in demo["supplier_trail"]], [3, 3, 2, 1])
+        latest = demo["latest_changes"]
+        self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
+        self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
