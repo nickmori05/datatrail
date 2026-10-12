@@ -165,18 +165,43 @@ class Store:
                    LIMIT ? OFFSET ?""", (dataset, key, limit, offset)
             )]
 
-    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None) -> dict:
+    def _baseline(self, connection, dataset: str, since: int) -> dict:
+        if type(since) is not int or since < 1:
+            raise InvalidInput("Since must be a positive dataset version.")
+        row = connection.execute(
+            """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
+               WHERE d.name = ? AND i.version = ?""", (dataset, since)
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"Dataset '{dataset}' has no version {since}.")
+        if row["rejected_count"]:
+            raise Conflict(f"Version {since} has flagged records and cannot be a baseline.")
+        return row
+
+    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None) -> dict:
         page_args(limit, offset)
         kinds = change_kinds(kinds)
         with closing(self.connect()) as connection:
             if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
                 raise NotFound(f"Dataset '{dataset}' does not exist.")
-            clean = connection.execute(
-                """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
-                   WHERE d.name = ? AND i.rejected_count = 0 ORDER BY i.version DESC LIMIT 2""", (dataset,)
-            ).fetchall()
-            if len(clean) < 2:
-                raise Conflict(f"Dataset '{dataset}' needs two clean snapshots to compare.")
+            if since is None:
+                clean = connection.execute(
+                    """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
+                       WHERE d.name = ? AND i.rejected_count = 0 ORDER BY i.version DESC LIMIT 2""", (dataset,)
+                ).fetchall()
+                if len(clean) < 2:
+                    raise Conflict(f"Dataset '{dataset}' needs two clean snapshots to compare.")
+            else:
+                # A chosen baseline is compared with the newest clean snapshot after it.
+                baseline = self._baseline(connection, dataset, since)
+                newest = connection.execute(
+                    """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
+                       WHERE d.name = ? AND i.rejected_count = 0 AND i.version > ?
+                       ORDER BY i.version DESC LIMIT 1""", (dataset, since)
+                ).fetchone()
+                if newest is None:
+                    raise Conflict(f"Dataset '{dataset}' has no clean snapshot newer than version {since}.")
+                clean = [newest, baseline]
             # Flagged snapshots newer than the baseline are skipped, but callers should know they exist.
             skipped = [dict(row) for row in connection.execute(
                 """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
