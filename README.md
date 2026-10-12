@@ -34,6 +34,7 @@ python3 -m datatrail imports suppliers
 python3 -m datatrail show 1
 python3 -m datatrail diff 1 2
 python3 -m datatrail changes suppliers
+python3 -m datatrail changes suppliers --since 1
 python3 -m datatrail trace suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
@@ -78,6 +79,7 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
 | GET | `/diff?before=1&after=2&kind=changed` | Compare clean snapshots |
 | GET | `/datasets/{name}/changes?kind=added` | Compare the two newest clean snapshots |
+| GET | `/datasets/{name}/changes?since=1` | Compare a baseline version with the newest clean snapshot |
 | GET | `/health/live` | Check that the API is responding |
 | GET | `/health/ready` | Check that the import table is readable |
 
@@ -160,6 +162,13 @@ of the comparison. Those are listed so a broken latest export is not mistaken
 for "nothing changed". Fewer than two clean snapshots returns a conflict (`409`
 in the API).
 
+`--since VERSION` (`since=` in the API) picks an older baseline by dataset
+version instead of the second-newest clean one. It is compared with the newest
+clean snapshot after it, and flagged imports in between are listed in
+`skipped_flagged`. An unknown version returns not found (`404`), and a flagged
+baseline or one with no newer clean snapshot returns a conflict (`409`). Use
+`diff` with import IDs to compare two specific older snapshots.
+
 Lists accept `--limit` (1–1,000, default 100) and `--offset`. Diffs keep full
 summary counts while paginating changed records in key order. Trace results
 are newest-version first; records retain source order. An empty result page
@@ -209,8 +218,8 @@ python3 scripts/docker_smoke.py
 
 The integration check creates its own temporary Compose project, image, database
 volume, and dynamically assigned localhost port. It exercises the real HTTP
-server, duplicate upload handling, quality reports, diffs, latest-change lookups,
-exact source downloads, CLI/API interoperability, and persistence across
-container recreation. It removes its containers, volume, network, and image
+server, duplicate upload handling, quality reports, diffs, latest-change and
+baseline-version lookups, exact source downloads, CLI/API interoperability, and
+persistence across container recreation. It removes its containers, volume, network, and image
 afterward. Regular workspace data is
 not used. GitHub Actions runs this check plus the Python suite on 3.11 and 3.14.
