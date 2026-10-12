@@ -147,6 +147,34 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(InvalidInput):
             self.store.latest_changes("suppliers", kinds=["unchanged"])
 
+    def test_changes_since_compares_a_chosen_baseline_with_the_newest_clean_snapshot(self):
+        first = self.ingest(b"id,name\nA,Ada\n")
+        self.ingest(b"id,name\nA,Ada\nB,Bob\n")
+        dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")
+        latest = self.ingest(b"id,name\nA,Ada Lovelace\nB,Bob\nC,Cam\n")
+        result = self.store.latest_changes("suppliers", since=1)
+        self.assertEqual((result["before_id"], result["after_id"]), (first["id"], latest["id"]))
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 4))
+        self.assertEqual(result["counts"], {"added": 2, "removed": 0, "changed": 1, "unchanged": 0})
+        self.assertEqual(result["skipped_flagged"], [{"id": dirty["id"], "version": 3, "rejected_count": 2}])
+        self.assertEqual(self.store.latest_changes("suppliers", since=2)["skipped_flagged"][0]["version"], 3)
+        self.assertEqual(self.store.latest_changes("suppliers", since=1, kinds=["changed"])["total_changes"], 1)
+
+    def test_changes_since_rejects_missing_flagged_newest_and_invalid_baselines(self):
+        self.ingest()
+        self.ingest(b"id,name\nA,Ada\nA,Other\n")
+        with self.assertRaisesRegex(NotFound, "no version 9"):
+            self.store.latest_changes("suppliers", since=9)
+        with self.assertRaisesRegex(Conflict, "cannot be a baseline"):
+            self.store.latest_changes("suppliers", since=2)
+        with self.assertRaisesRegex(Conflict, "newer than version 1"):
+            self.store.latest_changes("suppliers", since=1)
+        for since in (0, -1, True, "1"):
+            with self.assertRaisesRegex(InvalidInput, "positive"):
+                self.store.latest_changes("suppliers", since=since)
+        with self.assertRaises(NotFound):
+            self.store.latest_changes("missing", since=1)
+
     def test_diff_blocks_flagged_inputs_instead_of_reporting_false_deletions(self):
         clean = self.ingest()
         dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")

@@ -76,6 +76,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([change["key"] for change in result["changes"]], ["C"])
         self.assertEqual(result["counts"]["removed"], 1)
 
+    def test_latest_changes_since_selects_baseline_version(self):
+        self.upload(b"id,name\nA,Ada\n")
+        self.upload(b"id,name\nA,Ada\nB,Bob\n")
+        self.upload(b"id,name\nA,Ada\nB,Bob\nC,Cam\n")
+        response = self.client.get("/datasets/suppliers/changes", params={"since": 1})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 3))
+        self.assertEqual([change["key"] for change in result["changes"]], ["B", "C"])
+        self.assertEqual(self.client.get("/datasets/suppliers/changes", params={"since": 3}).status_code, 409)
+        self.assertEqual(self.client.get("/datasets/suppliers/changes", params={"since": 9}).status_code, 404)
+        for since in (0, "first"):
+            self.assertEqual(self.client.get("/datasets/suppliers/changes", params={"since": since}).status_code, 422)
+
     def test_flagged_import_is_saved_but_cannot_be_compared(self):
         clean = self.upload().json()
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n")

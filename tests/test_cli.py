@@ -86,6 +86,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual([item["version"] for item in result["skipped_flagged"]], [3])
         self.assertEqual([change["key"] for change in result["changes"]], ["S003"])
 
+    def test_changes_since_picks_an_older_baseline(self):
+        for fixture in ("suppliers-before.csv", "suppliers-messy.csv", "suppliers-after.csv"):
+            self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+        code, output, errors = self.call("changes", "suppliers", "--since", "1")
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 3))
+        self.assertEqual([item["version"] for item in result["skipped_flagged"]], [2])
+        for since, message in (("2", "cannot be a baseline"), ("3", "newer than version 3"), ("7", "no version 7")):
+            code, output, errors = self.call("changes", "suppliers", "--since", since)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],
                                 cwd=ROOT, capture_output=True, text=True, timeout=30)
