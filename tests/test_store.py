@@ -175,6 +175,43 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(NotFound):
             self.store.latest_changes("missing", since=1)
 
+    def test_changes_until_compares_up_to_a_chosen_end_version(self):
+        first = self.ingest(b"id,name\nA,Ada\n")
+        dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")
+        middle = self.ingest(b"id,name\nA,Ada\nB,Bob\n")
+        self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\n")
+        self.ingest(b"id,name\nA,Ada Lovelace\nB,Bob\n")
+        result = self.store.latest_changes("suppliers", until=3)
+        self.assertEqual((result["before_id"], result["after_id"]), (first["id"], middle["id"]))
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 3))
+        self.assertEqual(result["counts"], {"added": 1, "removed": 0, "changed": 0, "unchanged": 1})
+        self.assertEqual(result["skipped_flagged"], [{"id": dirty["id"], "version": 2, "rejected_count": 2}])
+        ranged = self.store.latest_changes("suppliers", since=3, until=5)
+        self.assertEqual((ranged["before_version"], ranged["after_version"]), (3, 5))
+        self.assertEqual([item["version"] for item in ranged["skipped_flagged"]], [4])
+        self.assertEqual(self.store.latest_changes("suppliers", since=1, until=3, kinds=["changed"])["changes"], [])
+
+    def test_changes_until_rejects_missing_flagged_first_and_invalid_end_versions(self):
+        self.ingest()
+        self.ingest(b"id,name\nA,Ada\nA,Other\n")
+        self.ingest(b"id,name\nA,Ada\nB,Bob\n")
+        with self.assertRaisesRegex(NotFound, "no version 9"):
+            self.store.latest_changes("suppliers", until=9)
+        with self.assertRaisesRegex(Conflict, "cannot be an end version"):
+            self.store.latest_changes("suppliers", until=2)
+        with self.assertRaisesRegex(Conflict, "older than version 1"):
+            self.store.latest_changes("suppliers", until=1)
+        for since in (1, 3):
+            with self.assertRaisesRegex(InvalidInput, "older version than until"):
+                self.store.latest_changes("suppliers", since=since, until=1 if since == 1 else 3)
+        with self.assertRaisesRegex(Conflict, "cannot be a baseline"):
+            self.store.latest_changes("suppliers", since=2, until=3)
+        for until in (0, -1, True, "3"):
+            with self.assertRaisesRegex(InvalidInput, "Until must be a positive"):
+                self.store.latest_changes("suppliers", until=until)
+        with self.assertRaises(NotFound):
+            self.store.latest_changes("missing", until=1)
+
     def test_diff_blocks_flagged_inputs_instead_of_reporting_false_deletions(self):
         clean = self.ingest()
         dirty = self.ingest(b"id,name\nA,Ada\nA,Other\n")

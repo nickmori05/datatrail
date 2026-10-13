@@ -165,49 +165,66 @@ class Store:
                    LIMIT ? OFFSET ?""", (dataset, key, limit, offset)
             )]
 
-    def _baseline(self, connection, dataset: str, since: int) -> dict:
-        if type(since) is not int or since < 1:
-            raise InvalidInput("Since must be a positive dataset version.")
+    def _version(self, connection, dataset: str, version: int, option: str, role: str) -> dict:
+        if type(version) is not int or version < 1:
+            raise InvalidInput(f"{option} must be a positive dataset version.")
         row = connection.execute(
             """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
-               WHERE d.name = ? AND i.version = ?""", (dataset, since)
+               WHERE d.name = ? AND i.version = ?""", (dataset, version)
         ).fetchone()
         if row is None:
-            raise NotFound(f"Dataset '{dataset}' has no version {since}.")
+            raise NotFound(f"Dataset '{dataset}' has no version {version}.")
         if row["rejected_count"]:
-            raise Conflict(f"Version {since} has flagged records and cannot be a baseline.")
+            raise Conflict(f"Version {version} has flagged records and cannot be {role}.")
         return row
 
-    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None) -> dict:
+    def _clean(self, connection, dataset: str, above=0, below=None, count=1) -> list:
+        query = """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
+                   WHERE d.name = ? AND i.rejected_count = 0 AND i.version > ?"""
+        params = [dataset, above]
+        if below is not None:
+            query += " AND i.version < ?"
+            params.append(below)
+        return connection.execute(query + " ORDER BY i.version DESC LIMIT ?", (*params, count)).fetchall()
+
+    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None) -> dict:
         page_args(limit, offset)
         kinds = change_kinds(kinds)
         with closing(self.connect()) as connection:
             if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
                 raise NotFound(f"Dataset '{dataset}' does not exist.")
-            if since is None:
-                clean = connection.execute(
-                    """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
-                       WHERE d.name = ? AND i.rejected_count = 0 ORDER BY i.version DESC LIMIT 2""", (dataset,)
-                ).fetchall()
+            if since is not None:
+                baseline = self._version(connection, dataset, since, "Since", "a baseline")
+            if until is not None:
+                # A chosen end version replaces the newest clean snapshot as the newer side.
+                newest = self._version(connection, dataset, until, "Until", "an end version")
+                if since is None:
+                    older = self._clean(connection, dataset, below=until)
+                    if not older:
+                        raise Conflict(f"Dataset '{dataset}' has no clean snapshot older than version {until}.")
+                    baseline = older[0]
+                elif since >= until:
+                    raise InvalidInput("Since must be an older version than until.")
+                clean = [newest, baseline]
+            elif since is None:
+                clean = self._clean(connection, dataset, count=2)
                 if len(clean) < 2:
                     raise Conflict(f"Dataset '{dataset}' needs two clean snapshots to compare.")
             else:
                 # A chosen baseline is compared with the newest clean snapshot after it.
-                baseline = self._baseline(connection, dataset, since)
-                newest = connection.execute(
-                    """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
-                       WHERE d.name = ? AND i.rejected_count = 0 AND i.version > ?
-                       ORDER BY i.version DESC LIMIT 1""", (dataset, since)
-                ).fetchone()
-                if newest is None:
+                newest = self._clean(connection, dataset, above=since)
+                if not newest:
                     raise Conflict(f"Dataset '{dataset}' has no clean snapshot newer than version {since}.")
-                clean = [newest, baseline]
-            # Flagged snapshots newer than the baseline are skipped, but callers should know they exist.
-            skipped = [dict(row) for row in connection.execute(
-                """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
-                   WHERE d.name = ? AND i.rejected_count > 0 AND i.version > ? ORDER BY i.version DESC""",
-                (dataset, clean[1]["version"]),
-            )]
+                clean = [newest[0], baseline]
+            # Flagged snapshots after the baseline are skipped, but callers should know they exist.
+            # With a chosen end version, only those inside the compared range are listed.
+            query = """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
+                       WHERE d.name = ? AND i.rejected_count > 0 AND i.version > ?"""
+            params = [dataset, clean[1]["version"]]
+            if until is not None:
+                query += " AND i.version < ?"
+                params.append(until)
+            skipped = [dict(row) for row in connection.execute(query + " ORDER BY i.version DESC", params)]
         result = self.diff(clean[1]["id"], clean[0]["id"], limit, offset, kinds)
         return {"dataset": dataset, "before_version": clean[1]["version"], "after_version": clean[0]["version"],
                 "skipped_flagged": skipped, **result}

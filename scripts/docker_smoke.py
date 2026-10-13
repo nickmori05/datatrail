@@ -66,6 +66,9 @@ def main():
         since = request(base, f"/datasets/suppliers/changes?since={before['version']}")
         assert since["after_id"] == after["id"], since
         request(base, f"/datasets/suppliers/changes?since={messy['version']}", expected=409)
+        until = request(base, f"/datasets/suppliers/changes?until={after['version']}")
+        assert (until["before_id"], until["skipped_flagged"]) == (before["id"], []), until
+        request(base, f"/datasets/suppliers/changes?until={messy['version']}", expected=409)
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
