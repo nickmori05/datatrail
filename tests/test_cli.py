@@ -99,6 +99,20 @@ class CliTests(unittest.TestCase):
             self.assertEqual((code, output), (2, ""))
             self.assertIn(message, errors)
 
+    def test_changes_until_picks_an_older_end_version(self):
+        for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
+            self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+        code, output, errors = self.call("changes", "suppliers", "--until", "2", "--kind", "changed")
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 2))
+        self.assertEqual((result["skipped_flagged"], [change["key"] for change in result["changes"]]), ([], ["S002"]))
+        for args, message in ((("--until", "3"), "cannot be an end version"), (("--until", "1"), "older than version 1"),
+                              (("--since", "2", "--until", "1"), "older version than until")):
+            code, output, errors = self.call("changes", "suppliers", *args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],
                                 cwd=ROOT, capture_output=True, text=True, timeout=30)

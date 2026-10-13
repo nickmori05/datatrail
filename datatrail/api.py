@@ -121,8 +121,8 @@ def create_app(database: Path | None = None) -> FastAPI:
     @app.get("/datasets/{dataset}/changes")
     def changes(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
                 kind: list[Literal["added", "removed", "changed"]] = Query(default=[]),
-                since: int | None = Query(default=None, ge=1)):
-        return store.latest_changes(dataset, limit, offset, kinds=kind, since=since)
+                since: int | None = Query(default=None, ge=1), until: int | None = Query(default=None, ge=1)):
+        return store.latest_changes(dataset, limit, offset, kinds=kind, since=since, until=until)
 
     @app.get("/diff")
     def diff(before: int, after: int, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),

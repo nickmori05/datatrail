@@ -35,6 +35,7 @@ def parser():
     changes = commands.add_parser("changes", help="Compare a dataset's two newest clean snapshots")
     changes.add_argument("dataset")
     changes.add_argument("--since", type=int, help="Compare from this clean version instead of the second newest")
+    changes.add_argument("--until", type=int, help="Compare up to this clean version instead of the newest")
     for command in (diff, changes):
         command.add_argument("--kind", action="append", choices=CHANGE_KINDS, help="Only list this kind of change; repeatable")
     for command in (datasets, imports, records, trace, diff, changes):
@@ -65,7 +66,8 @@ def main(argv=None):
         elif args.command == "trace":
             result = store.trace(args.dataset, args.key, args.limit, args.offset)
         elif args.command == "changes":
-            result = store.latest_changes(args.dataset, args.limit, args.offset, kinds=args.kind, since=args.since)
+            result = store.latest_changes(args.dataset, args.limit, args.offset, kinds=args.kind, since=args.since,
+                                          until=args.until)
         else:
             result = store.diff(args.before, args.after, args.limit, args.offset, kinds=args.kind)
         print(json.dumps(result, indent=2, ensure_ascii=False))

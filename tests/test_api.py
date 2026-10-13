@@ -90,6 +90,22 @@ class ApiTests(unittest.TestCase):
         for since in (0, "first"):
             self.assertEqual(self.client.get("/datasets/suppliers/changes", params={"since": since}).status_code, 422)
 
+    def test_latest_changes_until_selects_end_version(self):
+        self.upload(b"id,name\nA,Ada\n")
+        self.upload(b"id,name\nA,Ada\nB,Bob\n")
+        self.upload(b"id,name\nA,Ada\nA,Other\n")
+        self.upload(b"id,name\nA,Ada\nB,Bob\nC,Cam\n")
+        response = self.client.get("/datasets/suppliers/changes", params={"until": 2})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual((result["before_version"], result["after_version"]), (1, 2))
+        self.assertEqual(([change["key"] for change in result["changes"]], result["skipped_flagged"]), (["B"], []))
+        ranged = self.client.get("/datasets/suppliers/changes", params={"since": 1, "until": 4}).json()
+        self.assertEqual([item["version"] for item in ranged["skipped_flagged"]], [3])
+        for params, status in (({"until": 3}, 409), ({"until": 1}, 409), ({"until": 9}, 404),
+                               ({"since": 2, "until": 2}, 400), ({"until": 0}, 422), ({"until": "last"}, 422)):
+            self.assertEqual(self.client.get("/datasets/suppliers/changes", params=params).status_code, status, params)
+
     def test_flagged_import_is_saved_but_cannot_be_compared(self):
         clean = self.upload().json()
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n")
