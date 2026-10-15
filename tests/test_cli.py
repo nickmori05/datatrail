@@ -60,6 +60,21 @@ class CliTests(unittest.TestCase):
         _, output, _ = self.call("imports", "suppliers")
         self.assertEqual(len(json.loads(output)), 2)
 
+    def test_records_issue_option_lists_rows_with_that_code(self):
+        _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / "suppliers-messy.csv"), "--key", "supplier_id")
+        identifier = str(json.loads(output)["id"])
+        code, output, errors = self.call("records", identifier, "--issue", "duplicate_key")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual([(row["number"], row["source_line"]) for row in json.loads(output)], [(2, 3), (3, 4)])
+        code, output, _ = self.call("records", identifier, "--issue", "missing_key", "--issue", "column_count")
+        self.assertEqual([row["issues"] for row in json.loads(output)], [["missing_key"], ["column_count"]])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            main(["--database", str(self.database), "records", identifier, "--issue", "bad_key"])
+        self.assertEqual(error.exception.code, 2)
+        code, output, errors = self.call("records", "999", "--issue", "missing_key")
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("does not exist", errors)
+
     def test_diff_kind_option_limits_listed_changes(self):
         ids = []
         for fixture in ("suppliers-before.csv", "suppliers-after.csv"):

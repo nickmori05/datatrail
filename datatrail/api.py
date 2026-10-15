@@ -102,8 +102,9 @@ def create_app(database: Path | None = None) -> FastAPI:
 
     @app.get("/imports/{identifier}/records")
     def records(identifier: int, flagged: bool = False, limit: int = Query(default=100, ge=1, le=1000),
-                offset: int = Query(default=0, ge=0)):
-        return store.records(identifier, flagged=flagged, limit=limit, offset=offset)
+                offset: int = Query(default=0, ge=0),
+                issue: list[Literal["column_count", "missing_key", "duplicate_key"]] = Query(default=[])):
+        return store.records(identifier, flagged=flagged, issues=issue, limit=limit, offset=offset)
 
     @app.get("/imports/{identifier}/source")
     def source(identifier: int):

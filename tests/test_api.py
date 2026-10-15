@@ -119,6 +119,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("flagged", response.json()["detail"])
 
+    def test_records_filter_by_repeated_issue_parameters(self):
+        dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n,Missing\nC\n").json()
+        path = f"/imports/{dirty['id']}/records"
+        response = self.client.get(path, params={"issue": "duplicate_key"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([row["number"] for row in response.json()], [2, 3])
+        both = self.client.get(path, params={"issue": ["column_count", "missing_key"], "limit": 1, "offset": 1}).json()
+        self.assertEqual([row["issues"] for row in both], [["column_count"]])
+        self.assertEqual(self.client.get(path, params={"issue": "unknown"}).status_code, 422)
+        self.assertEqual(self.client.get("/imports/999/records", params={"issue": "missing_key"}).status_code, 404)
+
     def test_bad_encoding_csv_and_dataset_names_are_rejected_without_imports(self):
         for content in (b"name\nAda", b"id,name\nA,\xff", b'id,name\nA,"unfinished'):
             with self.subTest(content=content):

@@ -30,6 +30,12 @@ def change_kinds(kinds) -> list[str]:
     return [kind for kind in CHANGE_KINDS if kind in kinds]
 
 
+def issue_codes(codes) -> list[str]:
+    if any(code not in ISSUE_CODES for code in codes):
+        raise InvalidInput("Issue codes must be column_count, missing_key or duplicate_key.")
+    return [code for code in ISSUE_CODES if code in codes]
+
+
 def import_dict(row) -> dict:
     result = dict(row)
     result["headers"] = json.loads(result.pop("headers_json"))
@@ -143,15 +149,22 @@ class Store:
         with closing(self.connect()) as connection:
             return self._import(connection, identifier)
 
-    def records(self, identifier: int, *, flagged=False, limit=100, offset=0) -> list[dict]:
+    def records(self, identifier: int, *, flagged=False, issues=None, limit=100, offset=0) -> list[dict]:
         page_args(limit, offset)
+        issues = issue_codes(issues or [])
         with closing(self.connect()) as connection:
             self._import(connection, identifier)
             query = "SELECT * FROM records WHERE import_id = ?"
-            if flagged:
+            params = [identifier]
+            if flagged or issues:
                 query += " AND issue_count > 0"
+            if issues:
+                # Rows matching any requested code are listed once, in source order.
+                marks = ", ".join("?" * len(issues))
+                query += f" AND EXISTS (SELECT 1 FROM json_each(issues_json) WHERE value IN ({marks}))"
+                params += issues
             query += " ORDER BY number LIMIT ? OFFSET ?"
-            return [record_dict(row) for row in connection.execute(query, (identifier, limit, offset))]
+            return [record_dict(row) for row in connection.execute(query, (*params, limit, offset))]
 
     def source(self, identifier: int) -> bytes:
         with closing(self.connect()) as connection:
