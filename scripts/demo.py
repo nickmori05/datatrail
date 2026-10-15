@@ -26,10 +26,11 @@ def main():
         dirty = cli("import", "suppliers", "examples/suppliers-messy.csv", "--key", "supplier_id", expected=1)
         comparison = cli("diff", str(before["id"]), str(after["id"]))
         flags = cli("records", str(dirty["id"]), "--flagged")
+        issues = cli("show", str(dirty["id"]))["issue_counts"]
         trail = cli("trace", "suppliers", "S002")
         latest = cli("changes", "suppliers", "--kind", "changed")
-        print(json.dumps({"comparison": comparison, "flagged_records": flags, "supplier_trail": trail,
-                          "latest_changes": latest}, indent=2))
+        print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
+                          "supplier_trail": trail, "latest_changes": latest}, indent=2))
 
 
 if __name__ == "__main__":

@@ -136,6 +136,7 @@ class CliTests(unittest.TestCase):
         demo = json.loads(result.stdout)
         self.assertEqual(demo["comparison"]["counts"], {"added": 1, "removed": 1, "changed": 1, "unchanged": 1})
         self.assertEqual(len(demo["flagged_records"]), 4)
+        self.assertEqual(demo["issue_counts"], {"column_count": 1, "missing_key": 1, "duplicate_key": 2})
         self.assertEqual([row["version"] for row in demo["supplier_trail"]], [3, 3, 2, 1])
         latest = demo["latest_changes"]
         self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
