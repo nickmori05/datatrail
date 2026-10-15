@@ -7,7 +7,7 @@ import re
 import sqlite3
 
 from .errors import Conflict, InvalidInput, NotFound
-from .ingest import parse_csv
+from .ingest import ISSUE_CODES, parse_csv
 
 
 CHANGE_KINDS = ("added", "removed", "changed")
@@ -68,7 +68,14 @@ class Store:
         ).fetchone()
         if row is None:
             raise NotFound(f"Import {identifier} does not exist.")
-        return import_dict(row)
+        result = import_dict(row)
+        # Break flagged rows down by issue code; a row counts once for each code it carries.
+        counts = dict(connection.execute(
+            """SELECT j.value, COUNT(*) FROM records r, json_each(r.issues_json) j
+               WHERE r.import_id = ? AND r.issue_count > 0 GROUP BY j.value""", (identifier,)
+        ).fetchall())
+        result["issue_counts"] = {code: counts.get(code, 0) for code in ISSUE_CODES}
+        return result
 
     def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):

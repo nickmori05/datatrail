@@ -43,8 +43,8 @@ class CliTests(unittest.TestCase):
             self.assertTrue(errors.startswith("Error:"))
 
     def test_show_reports_saved_metadata_for_clean_and_flagged_imports(self):
-        for fixture, expected_counts in (("suppliers-before.csv", (3, 3, 0)),
-                                         ("suppliers-messy.csv", (5, 1, 4))):
+        for fixture, expected_counts, issues in (("suppliers-before.csv", (3, 3, 0), (0, 0, 0)),
+                                                 ("suppliers-messy.csv", (5, 1, 4), (1, 1, 2))):
             with self.subTest(fixture=fixture):
                 _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
                 imported = json.loads(output)
@@ -53,6 +53,7 @@ class CliTests(unittest.TestCase):
                 details = json.loads(output)
                 self.assertEqual(details, {key: value for key, value in imported.items() if key != "replayed"})
                 self.assertEqual((details["row_count"], details["accepted_count"], details["rejected_count"]), expected_counts)
+                self.assertEqual(details["issue_counts"], dict(zip(("column_count", "missing_key", "duplicate_key"), issues)))
                 self.assertEqual(details["source_name"], fixture)
                 self.assertEqual(details["key_column"], "supplier_id")
                 self.assertNotIn("source", details)

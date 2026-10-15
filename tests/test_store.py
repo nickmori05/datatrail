@@ -91,6 +91,17 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in flagged], [3, 4])
         self.assertEqual(len(self.store.trace("suppliers", "B")), 2)
 
+    def test_issue_counts_break_down_flagged_rows_by_code(self):
+        clean = self.ingest()
+        self.assertEqual(clean["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 0})
+        dirty = self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\nB,Ben\n,Missing\nC\nD,x,y\n")
+        expected = {"column_count": 2, "missing_key": 1, "duplicate_key": 3}
+        self.assertEqual(dirty["issue_counts"], expected)
+        self.assertEqual(sum(expected.values()), dirty["rejected_count"])
+        self.assertEqual(self.store.get_import(dirty["id"])["issue_counts"], expected)
+        self.assertEqual(self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\nB,Ben\n,Missing\nC\nD,x,y\n"),
+                         {**dirty, "replayed": True})
+
     def test_diff_counts_and_field_changes_include_source_record_numbers(self):
         before = self.ingest(b"id,name,city\nA,Ada,Boston\nB,Bob,Denver\nC,Cam,Austin\n")
         after = self.ingest(b"id,name,city\nB,Bob,Chicago\nA,Ada,Boston\nD,Dee,Reno\n")
