@@ -20,8 +20,8 @@ python3 scripts/demo.py
 ```
 
 The demo uses a temporary database, prints the comparison, flagged records, the
-history of supplier `S002`, and the latest clean changes (skipping the messy
-export), then removes its temporary files. All example
+messy export's issue counts, the history of supplier `S002`, and the latest
+clean changes (skipping the messy export), then removes its temporary files. All example
 suppliers are fictional.
 
 For a persistent workspace:
@@ -39,6 +39,7 @@ python3 -m datatrail changes suppliers --until 2
 python3 -m datatrail trace suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
+python3 -m datatrail records 3 --issue duplicate_key
 ```
 
 The numeric IDs above assume a fresh database; use the IDs returned by your
@@ -46,8 +47,8 @@ imports. The default database is `.local/datatrail.sqlite3` relative to the
 working directory. Set `DATATRAIL_DB` or put `--database PATH` before the command
 to use another file. Local data is excluded from Git.
 
-`show ID` prints one import's source name, SHA-256 hash, timestamp, columns, and
-accepted/flagged record counts as JSON. It does not re-import the file or print
+`show ID` prints one import's source name, SHA-256 hash, timestamp, columns,
+accepted/flagged record counts, and flagged rows per issue code as JSON. It does not re-import the file or print
 its contents. Inspecting an import with flagged rows still exits `0`; a missing
 ID exits `2`.
 
@@ -76,6 +77,7 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect questionable rows |
+| GET | `/imports/{id}/records?issue=duplicate_key` | Inspect rows with one kind of issue |
 | GET | `/imports/{id}/source` | Download exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
 | GET | `/diff?before=1&after=2&kind=changed` | Compare clean snapshots |
@@ -88,7 +90,7 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 Readiness does not prove writes will succeed. Lists and diffs accept `limit` and
 `offset` with the same bounds as the CLI. Uploads return `201`, or `200` for an
 exact retry, with a `Location` header pointing to the import. Flagged rows still
-produce a saved import; inspect `rejected_count` in the response.
+produce a saved import; inspect `rejected_count` and `issue_counts` in the response.
 
 Invalid CSV returns `400`, missing resources `404`, conflicting dataset keys or
 unclean comparisons `409`, oversized uploads `413`, wrong content type `415`,
@@ -145,6 +147,14 @@ starting physical line of each CSV record. Multiline fields retain correct line
 references. `trace` finds an exact normalized key across all dataset versions,
 including flagged duplicates. Absence from a snapshot is shown by `diff`, not
 as a synthetic row in `trace`.
+
+Imports report `issue_counts`: how many rows carry each issue code
+(`column_count`, `missing_key`, `duplicate_key`), with zeros for codes that did
+not occur. A row is counted once per code it carries, so a large flagged export
+can be triaged without paging through every row. `records --issue CODE`
+(repeatable; `issue=` in the API) lists only flagged rows with any of those
+codes, in source order and before pagination. It works with or without
+`--flagged`. An unknown code is invalid input (`422` in the API).
 
 `diff` requires two imports from the same dataset with zero flagged rows. It
 reports added, removed, changed, and unchanged counts, plus field-level changes
@@ -228,7 +238,7 @@ python3 scripts/docker_smoke.py
 
 The integration check creates its own temporary Compose project, image, database
 volume, and dynamically assigned localhost port. It exercises the real HTTP
-server, duplicate upload handling, quality reports, diffs, latest-change,
+server, duplicate upload handling, quality reports and issue filters, diffs, latest-change,
 baseline-version and end-version lookups, exact source downloads, CLI/API interoperability, and
 persistence across container recreation. It removes its containers, volume, network, and image
 afterward. Regular workspace data is

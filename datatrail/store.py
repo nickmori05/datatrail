@@ -7,7 +7,7 @@ import re
 import sqlite3
 
 from .errors import Conflict, InvalidInput, NotFound
-from .ingest import parse_csv
+from .ingest import ISSUE_CODES, parse_csv
 
 
 CHANGE_KINDS = ("added", "removed", "changed")
@@ -28,6 +28,12 @@ def change_kinds(kinds) -> list[str]:
     if any(kind not in CHANGE_KINDS for kind in kinds):
         raise InvalidInput("Change kinds must be added, removed or changed.")
     return [kind for kind in CHANGE_KINDS if kind in kinds]
+
+
+def issue_codes(codes) -> list[str]:
+    if any(code not in ISSUE_CODES for code in codes):
+        raise InvalidInput("Issue codes must be column_count, missing_key or duplicate_key.")
+    return [code for code in ISSUE_CODES if code in codes]
 
 
 def import_dict(row) -> dict:
@@ -68,7 +74,14 @@ class Store:
         ).fetchone()
         if row is None:
             raise NotFound(f"Import {identifier} does not exist.")
-        return import_dict(row)
+        result = import_dict(row)
+        # Break flagged rows down by issue code; a row counts once for each code it carries.
+        counts = dict(connection.execute(
+            """SELECT j.value, COUNT(*) FROM records r, json_each(r.issues_json) j
+               WHERE r.import_id = ? AND r.issue_count > 0 GROUP BY j.value""", (identifier,)
+        ).fetchall())
+        result["issue_counts"] = {code: counts.get(code, 0) for code in ISSUE_CODES}
+        return result
 
     def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
@@ -136,15 +149,22 @@ class Store:
         with closing(self.connect()) as connection:
             return self._import(connection, identifier)
 
-    def records(self, identifier: int, *, flagged=False, limit=100, offset=0) -> list[dict]:
+    def records(self, identifier: int, *, flagged=False, issues=None, limit=100, offset=0) -> list[dict]:
         page_args(limit, offset)
+        issues = issue_codes(issues or [])
         with closing(self.connect()) as connection:
             self._import(connection, identifier)
             query = "SELECT * FROM records WHERE import_id = ?"
-            if flagged:
+            params = [identifier]
+            if flagged or issues:
                 query += " AND issue_count > 0"
+            if issues:
+                # Rows matching any requested code are listed once, in source order.
+                marks = ", ".join("?" * len(issues))
+                query += f" AND EXISTS (SELECT 1 FROM json_each(issues_json) WHERE value IN ({marks}))"
+                params += issues
             query += " ORDER BY number LIMIT ? OFFSET ?"
-            return [record_dict(row) for row in connection.execute(query, (identifier, limit, offset))]
+            return [record_dict(row) for row in connection.execute(query, (*params, limit, offset))]
 
     def source(self, identifier: int) -> bytes:
         with closing(self.connect()) as connection:

@@ -6,7 +6,7 @@ import sqlite3
 import sys
 
 from .errors import Conflict, InvalidInput, NotFound
-from .ingest import MAX_BYTES
+from .ingest import ISSUE_CODES, MAX_BYTES
 from .store import CHANGE_KINDS, Store
 
 
@@ -26,6 +26,8 @@ def parser():
     records = commands.add_parser("records", help="Inspect original and normalized values")
     records.add_argument("import_id", type=int)
     records.add_argument("--flagged", action="store_true")
+    records.add_argument("--issue", action="append", choices=ISSUE_CODES,
+                         help="Only list flagged rows with this issue code; repeatable")
     trace = commands.add_parser("trace", help="Trace an exact normalized key through snapshots")
     trace.add_argument("dataset")
     trace.add_argument("key")
@@ -62,7 +64,8 @@ def main(argv=None):
         elif args.command == "show":
             result = store.get_import(args.import_id)
         elif args.command == "records":
-            result = store.records(args.import_id, flagged=args.flagged, limit=args.limit, offset=args.offset)
+            result = store.records(args.import_id, flagged=args.flagged, issues=args.issue, limit=args.limit,
+                                   offset=args.offset)
         elif args.command == "trace":
             result = store.trace(args.dataset, args.key, args.limit, args.offset)
         elif args.command == "changes":
