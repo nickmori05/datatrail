@@ -1,6 +1,7 @@
+"""HTTP API over the same store and database as the CLI."""
+
 from contextlib import asynccontextmanager, closing
 import hashlib
-import os
 from pathlib import Path
 import sqlite3
 from typing import Literal
@@ -9,12 +10,17 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from . import __version__
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, MAX_BYTES
-from .store import Store
+from .store import CHANGE_KINDS, Store, default_database
+
+
+TOO_LARGE = f"CSV files must be at most {MAX_BYTES // (1024 * 1024)} MiB."
 
 
 async def read_csv(request: Request) -> bytes:
+    """Read a text/csv request body, stopping as soon as it exceeds the size limit."""
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "text/csv":
         raise HTTPException(415, "Send the CSV body with Content-Type: text/csv.")
     declared = request.headers.get("content-length")
@@ -26,27 +32,27 @@ async def read_csv(request: Request) -> bytes:
         if length < 0:
             raise HTTPException(400, "Invalid Content-Length.")
         if length > MAX_BYTES:
-            raise HTTPException(413, "CSV files must be at most 5 MiB.")
+            raise HTTPException(413, TOO_LARGE)
     chunks = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
         if size > MAX_BYTES:
-            raise HTTPException(413, "CSV files must be at most 5 MiB.")
+            raise HTTPException(413, TOO_LARGE)
         chunks.append(chunk)
     return b"".join(chunks)
 
 
 def create_app(database: Path | None = None) -> FastAPI:
-    store = Store(database if database is not None
-                  else Path(os.environ.get("DATATRAIL_DB", ".local/datatrail.sqlite3")))
+    """Build the API for a database path, defaulting to the CLI's database setting."""
+    store = Store(database if database is not None else default_database())
 
     @asynccontextmanager
     async def lifespan(app):
         await run_in_threadpool(store.initialize)
         yield
 
-    app = FastAPI(title="Datatrail", version="0.1.0", lifespan=lifespan,
+    app = FastAPI(title="Datatrail", version=__version__, lifespan=lifespan,
                   description="Local CSV snapshot investigation with original-source provenance.")
 
     @app.exception_handler(InvalidInput)
@@ -123,14 +129,14 @@ def create_app(database: Path | None = None) -> FastAPI:
 
     @app.get("/datasets/{dataset}/changes")
     def changes(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
-                kind: list[Literal["added", "removed", "changed"]] = Query(default=[]),
+                kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),
                 since: int | None = Query(default=None, ge=1), until: int | None = Query(default=None, ge=1)):
         return store.latest_changes(dataset, limit, offset, kinds=kind, since=since, until=until)
 
     @app.get("/diff")
     def diff(before: int, after: int, limit: int = Query(default=100, ge=1, le=1000),
              offset: int = Query(default=0, ge=0),
-             kind: list[Literal["added", "removed", "changed"]] = Query(default=[])):
+             kind: list[Literal[CHANGE_KINDS]] = Query(default=[])):
         return store.diff(before, after, limit, offset, kinds=kind)
 
     return app

@@ -1,18 +1,20 @@
+"""Command-line interface: python -m datatrail COMMAND."""
+
 import argparse
 import json
-import os
 from pathlib import Path
 import sqlite3
 import sys
 
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, MAX_BYTES
-from .store import CHANGE_KINDS, Store
+from .store import CHANGE_KINDS, Store, default_database
 
 
 def parser():
+    """Build the argument parser for every command."""
     root = argparse.ArgumentParser(description="Import CSV snapshots and investigate record changes.")
-    root.add_argument("--database", type=Path, default=Path(os.environ.get("DATATRAIL_DB", ".local/datatrail.sqlite3")))
+    root.add_argument("--database", type=Path, default=default_database())
     commands = root.add_subparsers(dest="command", required=True)
     ingest = commands.add_parser("import", help="Save a CSV snapshot and its quality report")
     ingest.add_argument("dataset")
@@ -51,6 +53,7 @@ def parser():
 
 
 def main(argv=None):
+    """Run one command and print its JSON result. Returns the process exit code."""
     args = parser().parse_args(argv)
     try:
         store = Store(args.database)

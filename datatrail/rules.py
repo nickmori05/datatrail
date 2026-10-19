@@ -1,3 +1,5 @@
+"""Optional per-dataset column types and the values each one accepts."""
+
 from datetime import date
 import re
 

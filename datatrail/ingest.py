@@ -1,3 +1,5 @@
+"""Parse CSV bytes and classify each record before anything is stored."""
+
 from collections import Counter
 import csv
 from dataclasses import dataclass, field
@@ -15,6 +17,8 @@ ISSUE_CODES = ("column_count", "missing_key", "duplicate_key", "invalid_value")
 
 @dataclass
 class ParsedRow:
+    """One CSV record: original cells, trimmed values when the shape is valid, and its issue codes."""
+
     number: int
     line: int
     key: str | None
@@ -26,9 +30,14 @@ class ParsedRow:
 
 def parse_csv(content: bytes, key_column: str,
               column_types: dict[str, str] | None = None) -> tuple[list[str], list[ParsedRow]]:
+    """Parse a whole CSV file and flag row-level problems.
+
+    Returns the trimmed header and every nonblank record in source order. Problems that make the
+    file unusable (encoding, quoting, limits, header, missing key or typed column) raise InvalidInput.
+    """
     column_types = column_types or {}
     if len(content) > MAX_BYTES:
-        raise InvalidInput("CSV files must be at most 5 MiB.")
+        raise InvalidInput(f"CSV files must be at most {MAX_BYTES // (1024 * 1024)} MiB.")
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError as error:
@@ -40,7 +49,7 @@ def parse_csv(content: bytes, key_column: str,
     try:
         headers = [value.strip() for value in next(reader, [])]
         if not headers or len(headers) > MAX_COLUMNS or any(not name or len(name) > 128 for name in headers):
-            raise InvalidInput("Use 1–64 nonempty column names, each at most 128 characters.")
+            raise InvalidInput(f"Use 1–{MAX_COLUMNS} nonempty column names, each at most 128 characters.")
         if len(set(headers)) != len(headers):
             raise InvalidInput("Column names must be unique after trimming whitespace.")
         if key_column not in headers:
@@ -56,7 +65,7 @@ def parse_csv(content: bytes, key_column: str,
             if not raw:
                 continue
             if len(rows) >= MAX_ROWS:
-                raise InvalidInput("CSV files must contain at most 10000 data records.")
+                raise InvalidInput(f"CSV files must contain at most {MAX_ROWS} data records.")
             issues = []
             data = None
             key = None

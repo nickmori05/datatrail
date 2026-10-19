@@ -1,3 +1,5 @@
+"""Build the Docker image, run the API in an isolated Compose project and exercise it over HTTP."""
+
 import json
 import os
 from pathlib import Path
