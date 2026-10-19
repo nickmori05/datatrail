@@ -64,6 +64,14 @@ def main():
         duplicates = request(base, f"/imports/{messy['id']}/records?issue=duplicate_key")
         assert [row["number"] for row in duplicates] == [2, 3], duplicates
         request(base, f"/imports/{messy['id']}/records?issue=unknown", expected=422)
+        invoice_bytes = (ROOT / "examples/invoices.csv").read_bytes()
+        typed = "/datasets/invoices/imports?key=invoice_id&type=amount:decimal&type=due_date:date"
+        invoices = request(base, typed, invoice_bytes, expected=201)
+        assert (invoices["rejected_count"], invoices["issue_counts"]["invalid_value"]) == (2, 2), invoices
+        invalid = request(base, f"/imports/{invoices['id']}/records?issue=invalid_value")
+        assert [row["invalid_columns"] for row in invalid] == [["amount"], ["due_date"]], invalid
+        request(base, "/datasets/invoices/imports?key=invoice_id&type=amount:integer", invoice_bytes, expected=409)
+        request(base, "/datasets/other/imports?key=invoice_id&type=amount:money", invoice_bytes, expected=400)
         request(base, f"/diff?before={before['id']}&after={messy['id']}", expected=409)
         latest = request(base, "/datasets/suppliers/changes?kind=changed")
         assert (latest["before_id"], latest["after_id"]) == (before["id"], after["id"]), latest
@@ -77,8 +85,8 @@ def main():
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
-        assert datasets[0]["import_count"] == 3, datasets
-        print("HTTP imports, retries, quality checks, diffs, latest changes, provenance and CLI reads passed.", flush=True)
+        assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "suppliers": 3}, datasets
+        print("HTTP imports, retries, quality and type checks, diffs, latest changes, provenance and CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

@@ -157,3 +157,5 @@ class CliTests(unittest.TestCase):
         latest = demo["latest_changes"]
         self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
+        self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
+                         [(3, ["amount"]), (4, ["due_date"])])

@@ -29,8 +29,11 @@ def main():
         issues = cli("show", str(dirty["id"]))["issue_counts"]
         trail = cli("trace", "suppliers", "S002")
         latest = cli("changes", "suppliers", "--kind", "changed")
+        invoices = cli("import", "invoices", "examples/invoices.csv", "--key", "invoice_id",
+                       "--type", "amount:decimal", "--type", "due_date:date", expected=1)
+        invalid = cli("records", str(invoices["id"]), "--issue", "invalid_value")
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
-                          "supplier_trail": trail, "latest_changes": latest}, indent=2))
+                          "supplier_trail": trail, "latest_changes": latest, "invalid_values": invalid}, indent=2))
 
 
 if __name__ == "__main__":
