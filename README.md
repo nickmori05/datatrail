@@ -1,17 +1,20 @@
 # Datatrail
 
-[![Tests](https://github.com/nickmori05/datatrail/actions/workflows/tests.yml/badge.svg)](https://github.com/nickmori05/datatrail/actions/workflows/tests.yml)
+[![CI](https://github.com/nickmori05/datatrail/actions/workflows/tests.yml/badge.svg)](https://github.com/nickmori05/datatrail/actions/workflows/tests.yml)
 
-Investigate what changed between CSV exports and trace each record back to its source.
+Datatrail is a small backend for investigating what changed between CSV
+exports of the same dataset. Each import is saved as a versioned snapshot with
+its exact original bytes and a row-level quality report. Rows with duplicate,
+missing or malformed keys, wrong column counts or values that fail declared
+column types are kept and labelled instead of being dropped, and snapshots
+with flagged rows are never used for comparisons. Clean snapshots can be
+compared field by field, and any key can be traced back through every version
+to its source file and line. It runs as a command-line tool (standard library
+only) or a FastAPI service, both backed by one SQLite file.
 
-The sample workflow compares two supplier exports: one supplier moved cities,
-one disappeared, and one was added. A third export contains ambiguous IDs and
-malformed rows. Datatrail keeps those rows visible and blocks comparisons until
-you import a clean file.
+## Quick start
 
-## Try it
-
-Python 3.11 or later. The CLI uses only the standard library.
+Requires Python 3.11 or later and nothing else:
 
 ```sh
 git clone https://github.com/nickmori05/datatrail.git
@@ -19,13 +22,15 @@ cd datatrail
 python3 scripts/demo.py
 ```
 
-The demo uses a temporary database, prints the comparison, flagged records, the
-messy export's issue counts, the history of supplier `S002`, the latest clean
-changes (skipping the messy export), and invoice rows whose amount or due date
-fails a column type check, then removes its temporary files. All example data is
-fictional.
+The demo imports the fictional files in `examples/` into a temporary database
+and prints the results as JSON. Two supplier exports differ by one moved, one
+removed and one added supplier. A third, messy export is flagged and left out
+of the comparison. An invoice file has an amount and a due date that fail
+their column types.
 
-For a persistent workspace:
+## Usage
+
+### Command line
 
 ```sh
 python3 -m datatrail import suppliers examples/suppliers-before.csv --key supplier_id
@@ -46,17 +51,17 @@ python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
 python3 -m datatrail records 4 --issue invalid_value
 ```
 
-The numeric IDs above assume a fresh database; use the IDs returned by your
-imports. The default database is `.local/datatrail.sqlite3` relative to the
-working directory. Set `DATATRAIL_DB` or put `--database PATH` before the command
-to use another file. Local data is excluded from Git.
+The IDs above assume a fresh database; use the IDs your imports return. Every
+command prints JSON. `python3 -m datatrail COMMAND --help` lists the options.
 
-`show ID` prints one import's source name, SHA-256 hash, timestamp, columns,
-accepted/flagged record counts, column types, and flagged rows per issue code as JSON. It does not re-import the file or print
-its contents. Inspecting an import with flagged rows still exits `0`; a missing
-ID exits `2`.
+The database is `.local/datatrail.sqlite3` in the working directory, which Git
+ignores. Set `DATATRAIL_DB`, or put `--database PATH` before the command, to use
+another file.
 
-## HTTP API
+Exit codes: `0` success, `1` an import was saved with flagged rows, `2` invalid
+input, a missing resource, a conflict or a storage error, `130` interrupted.
+
+### HTTP API
 
 ```sh
 python3 -m venv .venv
@@ -64,15 +69,16 @@ python3 -m venv .venv
 .venv/bin/python -m uvicorn datatrail.api:app --host 127.0.0.1 --port 8000
 ```
 
-Interactive API docs are at `http://127.0.0.1:8000/docs`. The API and CLI use the
-same database setting. This version is for one trusted local workspace: there
-is no authentication or per-user isolation. Keep it bound to localhost.
+In another terminal:
 
 ```sh
 curl -i -X POST 'http://127.0.0.1:8000/datasets/suppliers/imports?key=supplier_id&source_name=before.csv' \
   -H 'Content-Type: text/csv' --data-binary @examples/suppliers-before.csv
 curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 ```
+
+Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
+`DATATRAIL_DB` setting as the CLI, so both see the same data.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -81,29 +87,35 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 | GET | `/datasets` | List datasets |
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
 | GET | `/imports/{id}` | Import metadata and quality counts |
-| GET | `/imports/{id}/records?flagged=true` | Inspect questionable rows |
+| GET | `/imports/{id}/records?flagged=true` | Inspect flagged rows |
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
-| GET | `/imports/{id}/source` | Download exact original bytes |
-| GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
-| GET | `/diff?before=1&after=2&kind=changed` | Compare clean snapshots |
+| GET | `/imports/{id}/source` | Download the exact original bytes |
+| GET | `/datasets/{name}/trace?key=value` | Trace one normalized key |
+| GET | `/diff?before=1&after=2&kind=changed` | Compare two clean snapshots |
 | GET | `/datasets/{name}/changes?kind=added` | Compare the two newest clean snapshots |
 | GET | `/datasets/{name}/changes?since=1` | Compare a baseline version with the newest clean snapshot |
 | GET | `/datasets/{name}/changes?until=2` | Compare an end version with the newest clean snapshot before it |
 | GET | `/health/live` | Check that the API is responding |
 | GET | `/health/ready` | Check that the import table is readable |
 
-Readiness does not prove writes will succeed. Lists and diffs accept `limit` and
-`offset` with the same bounds as the CLI. Uploads return `201`, or `200` for an
-exact retry, with a `Location` header pointing to the import. Flagged rows still
-produce a saved import; inspect `rejected_count` and `issue_counts` in the response.
+Uploads return `201`, or `200` for an exact retry, with a `Location` header for
+the import. An import with flagged rows is still saved; check `rejected_count`
+and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 
-Invalid CSV or column type rules return `400`, missing resources `404`,
-conflicting dataset keys or column types and unclean comparisons `409`, oversized uploads `413`, wrong content type `415`,
-and invalid query parameters `422`. Storage errors return `503`. The upload
-size is checked as bytes arrive, even without a reliable Content-Length.
-The API never fetches remote URLs or opens a client-supplied server file path.
+| Status | Meaning |
+| --- | --- |
+| `400` | Invalid CSV or column type rules |
+| `404` | Missing dataset, import or version |
+| `409` | Changed key column or column types, or a comparison involving flagged snapshots |
+| `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
+| `415` | Body is not `Content-Type: text/csv` |
+| `422` | Invalid query parameters |
+| `503` | Storage unavailable |
 
-## Docker
+The API never fetches remote URLs or opens server file paths supplied by
+clients. Readiness does not prove writes will succeed.
+
+### Docker
 
 ```sh
 docker compose up --build -d --wait
@@ -112,169 +124,145 @@ docker compose exec api python -m datatrail datasets
 docker compose down
 ```
 
-The API binds to localhost on port 8000. Set `DATATRAIL_PORT=8001` if that port
-is already used. The container runs as a non-root user with a read-only root
-filesystem and a writable `/data` volume. The CLI inside the container shares
-the API's database. Your ordinary local Python database is separate.
-
-The named `datatrail-data` volume survives container recreation and
-`docker compose down`. Adding `--volumes` to `down` deletes that stored data.
-There is no background daemon or watcher outside the API container.
+The API listens on localhost port 8000; set `DATATRAIL_PORT=8001` if that port
+is taken. The container runs as a non-root user with a read-only root
+filesystem. Data lives in the `datatrail-data` volume, which survives
+`docker compose down` and is deleted by `docker compose down --volumes`. The CLI
+inside the container shares the API's database, which is separate from your
+local one.
 
 ## Import rules
 
-- UTF-8 CSV, with an optional BOM; comma delimiter and ordinary CSV quoting.
-- At most 5 MiB, 10,000 data records, and 64 columns. Column names must be nonempty,
-  unique after trimming, and no longer than 128 characters. Oversized fields are
-  also subject to Python's CSV parser limit.
-- Header and cell whitespace is trimmed for comparison. Original bytes and cells
-  are retained. Values stay strings: `001` and `1` are different keys. Matching
-  is case-sensitive; there is no fuzzy matching or automatic type inference.
-- A dataset has one fixed key column. All occurrences of duplicate normalized
-  keys are flagged, including the first. Missing keys and incorrect column counts
-  are flagged too. No arbitrary winner is selected.
-- Structurally invalid CSV, invalid encoding, or exceeded limits reject the entire
-  file. Row-level issues are saved with their raw cells for investigation.
-- Blank physical rows are skipped. A header-only file is a valid empty snapshot.
-  Comparing it against a populated snapshot reports removals.
-- Optional column types flag rows whose values are not integers, decimals or
-  dates (see below) with `invalid_value`.
+- UTF-8 CSV with an optional BOM, comma delimiter and standard quoting.
+- At most 5 MiB, 10,000 data records and 64 columns. Column names must be
+  nonempty, unique after trimming and at most 128 characters. Very large fields
+  also hit Python's CSV field size limit.
+- Header and cell whitespace is trimmed for comparison; the original bytes and
+  cells are kept. Values stay strings, so `001` and `1` are different keys, and
+  matching is case-sensitive.
+- Each dataset has one key column, fixed when the dataset is created.
+- Structurally invalid CSV, a bad encoding, an exceeded limit, or a missing key
+  or typed column rejects the whole file and saves nothing.
+- Row-level problems are saved with the raw cells and one or more issue codes:
 
-Every import is a full snapshot of one dataset, not a patch or event stream.
-Importing the exact same bytes into the same dataset returns the original import
-with `replayed: true`, even if the filename changed. Its original source label
-and timestamp remain. Whitespace-only file changes create a new snapshot but may
-produce no normalized value changes. Versions reflect database commit order,
-not dates inside the supplied files.
+  | Code | Meaning |
+  | --- | --- |
+  | `column_count` | The row has more or fewer cells than the header |
+  | `missing_key` | The key cell is empty |
+  | `duplicate_key` | The key appears more than once; every occurrence is flagged, none is picked as the winner |
+  | `invalid_value` | A cell does not match its column type |
+
+- Blank lines are skipped. A header-only file is a valid empty snapshot.
+- Importing identical bytes into the same dataset again returns the original
+  import with `replayed: true`, keeping its first source name and timestamp.
+  Any other change, even whitespace, creates a new version. Versions follow
+  import order, not dates inside the files.
 
 ## Column types
 
 `import --type COLUMN:TYPE` (repeatable; `type=` in the API) declares that a
-column holds one kind of value. Rows with a nonmatching value are flagged with
-`invalid_value` and kept, like any other flagged row, so the import cannot be
-compared until a clean file arrives.
+column holds one kind of value. Rows with a value that does not match are
+flagged with `invalid_value`.
 
 | Type | Accepts | Rejects |
 | --- | --- | --- |
 | `integer` | `42`, `-7`, `+003` | `4.0`, `1e3`, `1,000` |
 | `decimal` | `9.50`, `-.5`, `12.` | `9.5.1`, `1e3`, `$9`, `1,000` |
-| `date` | `2026-02-28`, calendar-valid ISO `YYYY-MM-DD` | `2026-02-30`, `02/28/2026`, `2026-2-28` |
+| `date` | Calendar-valid ISO dates such as `2026-02-28` | `2026-02-30`, `02/28/2026`, `2026-2-28` |
 
-Checks use the trimmed value and ASCII digits only. Empty cells are not checked,
-so a type does not make a column required. A key column can be typed too.
-`records` lists the failing columns of each row in `invalid_columns`, and
-imports count those rows under `invalid_value` in `issue_counts`.
+Checks use the trimmed value and ASCII digits only. Empty cells are not
+checked, so a type does not make a column required. Key columns can be typed.
+`records` lists each row's failing columns in `invalid_columns`.
 
-Types are saved with the dataset when it is created, like its key column. Later
-imports may omit `--type` and are checked against the saved types, or repeat
-the same set; a different set is a conflict (`409` in the API), so every
-version of a dataset is checked by the same rules. A typed column missing from
-the header, or a malformed or unknown type, rejects the file (`400`).
-`datasets`, `show` and import responses include `column_types`.
+Types are saved with the dataset when it is created, like the key column. Later
+imports can leave out `--type` and are still checked against the saved types, or
+repeat the same set. A different set is a conflict, so every version of a
+dataset is checked by the same rules. `datasets`, `show` and import responses
+include `column_types`. Databases created before column types existed are
+upgraded in place on startup; their datasets have no types.
 
-Databases created before column types existed are upgraded in place on
-startup. Their datasets have no types, so their imports behave as before.
+## Investigating changes
 
-## Investigation
+- `show ID` prints one import's source name, SHA-256, timestamp, columns, column
+  types, record counts and `issue_counts`: how many rows carry each issue code,
+  with zeros for codes that did not occur. It never prints the file contents.
+- `records ID` shows raw cells, normalized values, issue codes, record numbers
+  and the starting line of each record, including after multiline fields.
+  `--flagged` lists only flagged rows, and `--issue CODE` (repeatable) only rows
+  with any of those codes.
+- `trace DATASET KEY` finds an exact normalized key in every version, newest
+  first, including flagged duplicates.
+- `diff BEFORE AFTER` compares two clean imports of the same dataset by key. It
+  reports added, removed, changed and unchanged counts, field-level before and
+  after values with the original record numbers, and added or removed columns.
+  A missing field is `null`; an empty one is `""`. Column and row order do not
+  matter. `--kind added|removed|changed` (repeatable) lists only those changes;
+  the counts still cover every key.
+- `changes DATASET` runs the same comparison by version instead of import ID.
+  By default it compares the two newest clean snapshots. `--since VERSION` picks
+  the older side and `--until VERSION` the newer side; with only one of them, the
+  other side is the nearest clean snapshot. The result lists `skipped_flagged`,
+  the flagged imports inside the compared range, so a broken latest export is
+  not mistaken for "nothing changed". An unknown version is not found (`404`),
+  a flagged version or a missing clean counterpart is a conflict (`409`), and a
+  `--since` that is not older than `--until` is invalid (`400`).
 
-`records` shows raw cells, normalized data, issue codes, record numbers, and the
-starting physical line of each CSV record. Multiline fields retain correct line
-references. `trace` finds an exact normalized key across all dataset versions,
-including flagged duplicates. Absence from a snapshot is shown by `diff`, not
-as a synthetic row in `trace`.
-
-Imports report `issue_counts`: how many rows carry each issue code
-(`column_count`, `missing_key`, `duplicate_key`, `invalid_value`), with zeros for
-codes that did not occur. A row is counted once per code it carries, so a large flagged export
-can be triaged without paging through every row. `records --issue CODE`
-(repeatable; `issue=` in the API) lists only flagged rows with any of those
-codes, in source order and before pagination. It works with or without
-`--flagged`. An unknown code is invalid input (`422` in the API).
-
-`diff` requires two imports from the same dataset with zero flagged rows. It
-reports added, removed, changed, and unchanged counts, plus field-level changes
-and the original record numbers. Missing fields are JSON `null`; empty strings
-remain `""`. Schema additions and removals are reported separately. Column and
-row order do not affect comparison.
-
-`--kind added`, `--kind removed`, or `--kind changed` (repeatable; `kind=` in the
-API) lists only those changes. Summary counts still cover every key, while
-`total_changes` and pagination apply to the filtered list. Unchanged records are
-never listed.
-
-`changes DATASET` compares the dataset's two newest clean snapshots without
-looking up import IDs first. It returns the same diff plus `before_version`,
-`after_version`, and `skipped_flagged`: newer flagged imports that were left out
-of the comparison. Those are listed so a broken latest export is not mistaken
-for "nothing changed". Fewer than two clean snapshots returns a conflict (`409`
-in the API).
-
-`--since VERSION` (`since=` in the API) picks an older baseline by dataset
-version instead of the second-newest clean one. It is compared with the newest
-clean snapshot after it, and flagged imports in between are listed in
-`skipped_flagged`. An unknown version returns not found (`404`), and a flagged
-baseline or one with no newer clean snapshot returns a conflict (`409`).
-
-`--until VERSION` (`until=` in the API) picks the newer side instead of the
-newest clean snapshot, so you can review an older change without looking up
-import IDs. It is compared with the newest clean snapshot before it, or with
-`--since` when both are given. Only flagged imports between the two versions
-are listed in `skipped_flagged`; later ones are outside the chosen range. An
-unknown version returns `404`; a flagged end version or one with no older clean
-snapshot returns `409`. A `--since` that is not older than `--until` is invalid
-input (`400` in the API).
-
-Lists accept `--limit` (1–1,000, default 100) and `--offset`. Diffs keep full
-summary counts while paginating changed records in key order. Trace results
-are newest-version first; records retain source order. An empty result page
-means there are no further matching rows.
-
-Exit codes: `0` success, `1` an import saved flagged rows, `2` invalid input,
-missing resources, conflicts or storage errors, `130` interrupted.
+Lists accept `--limit` (1–1,000, default 100) and `--offset`. Filters apply
+before pagination, and an empty page means there are no more results.
 
 ## Design
 
-`ingest.py` parses and classifies records before opening a write transaction.
-`store.py` writes a dataset, import, original file, and all records in one SQLite
-transaction. A failure rolls everything back. `BEGIN IMMEDIATE` plus uniqueness
-constraints prevents concurrent retries from creating duplicate versions.
-Only supplied IDs determine identity; similar names are never silently merged.
+| Module | Responsibility |
+| --- | --- |
+| `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
+| `datatrail/rules.py` | Column type specs and the values each type accepts |
+| `datatrail/store.py` | SQLite schema setup, imports, queries and snapshot comparison |
+| `datatrail/__main__.py` | Command-line interface |
+| `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
-Read operations expose saved imports without edit or delete endpoints. This is
-application-level history, not tamper-proof storage: someone with direct access
-to the database can alter it. Source hashes identify imported bytes; they do not
-authenticate the source.
+Imports are parsed and classified first. The dataset, the import, the original
+file and all records are then written in one SQLite transaction, so a failure
+leaves nothing behind. `BEGIN IMMEDIATE` and uniqueness constraints stop
+concurrent retries from creating duplicate versions. Identity comes only from
+the key column; similar keys are never merged.
 
-This first version is a local investigation backend. It loads bounded snapshots
-into memory for comparisons. It has no users, permissions, background queue,
-cross-source entity resolution, or dashboard yet. Larger deployments will need
-those boundaries, a database migration strategy, and retention controls.
+There are no edit or delete operations. Hashes identify imported bytes but do
+not authenticate their source, and anyone with direct access to the database
+file can change it.
 
-## Tests
+## Development
 
 ```sh
+python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m unittest discover -s tests -v
+.venv/bin/ruff check .
 ```
 
-Tests use temporary databases and synthetic fixtures. They exercise duplicate
-handling, source preservation, multiline CSVs, atomic rollback, concurrent
-retries, concurrent version allocation, schema changes, pagination, and the
-documented CLI demo.
+Tests use temporary databases and synthetic fixtures. They cover parsing edge
+cases, duplicate handling, source preservation, atomic rollback, concurrent
+retries and version allocation, schema upgrades, pagination, CLI and API error
+paths, and the demo.
 
-API tests cover upload limits, exact source downloads, response codes, storage
-failures, shared CLI/API data, and persistence after restarting the application.
+With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
+image and runs the API in its own Compose project, volume and random localhost
+port. It checks uploads, retries, quality and type checks, diffs, version
+lookups, source downloads, CLI and API sharing one database, and persistence
+across container recreation, then removes everything it created.
 
-With a local Docker runtime and Compose available:
+GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
+check.
 
-```sh
-python3 scripts/docker_smoke.py
-```
+## Limitations
 
-The integration check creates its own temporary Compose project, image, database
-volume, and dynamically assigned localhost port. It exercises the real HTTP
-server, duplicate upload handling, quality reports and issue filters, column type checks, diffs, latest-change,
-baseline-version and end-version lookups, exact source downloads, CLI/API interoperability, and
-persistence across container recreation. It removes its containers, volume, network, and image
-afterward. Regular workspace data is
-not used. GitHub Actions runs this check plus the Python suite on 3.11 and 3.14.
+- Built for one trusted local workspace: no authentication, users or
+  per-user isolation. Keep the API bound to localhost.
+- Snapshots are bounded (5 MiB, 10,000 records) and compared in memory. There
+  is no background queue, retention policy or migration framework beyond the
+  additive upgrade on startup.
+- Keys are matched exactly. There is no fuzzy matching, cross-source entity
+  resolution or automatic type inference.
+- Column types cover integers, decimals and ISO dates only; there are no
+  required columns, enums, ranges or locale-specific number formats. A dataset's
+  key column and types cannot change; use a new dataset name.
+- Versions reflect import order, not dates inside the files.
