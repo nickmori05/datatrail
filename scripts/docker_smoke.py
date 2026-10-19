@@ -59,6 +59,10 @@ def main():
         messy = request(base, upload, messy_bytes, expected=201)
         assert messy["rejected_count"] == 4, messy
         assert len(request(base, f"/imports/{messy['id']}/records?flagged=true")) == 4
+        assert messy["issue_counts"] == {"column_count": 1, "missing_key": 1, "duplicate_key": 2}, messy
+        duplicates = request(base, f"/imports/{messy['id']}/records?issue=duplicate_key")
+        assert [row["number"] for row in duplicates] == [2, 3], duplicates
+        request(base, f"/imports/{messy['id']}/records?issue=unknown", expected=422)
         request(base, f"/diff?before={before['id']}&after={messy['id']}", expected=409)
         latest = request(base, "/datasets/suppliers/changes?kind=changed")
         assert (latest["before_id"], latest["after_id"]) == (before["id"], after["id"]), latest

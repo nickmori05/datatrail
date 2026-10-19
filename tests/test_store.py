@@ -91,6 +91,35 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in flagged], [3, 4])
         self.assertEqual(len(self.store.trace("suppliers", "B")), 2)
 
+    def test_issue_counts_break_down_flagged_rows_by_code(self):
+        clean = self.ingest()
+        self.assertEqual(clean["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 0})
+        dirty = self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\nB,Ben\n,Missing\nC\nD,x,y\n")
+        expected = {"column_count": 2, "missing_key": 1, "duplicate_key": 3}
+        self.assertEqual(dirty["issue_counts"], expected)
+        self.assertEqual(sum(expected.values()), dirty["rejected_count"])
+        self.assertEqual(self.store.get_import(dirty["id"])["issue_counts"], expected)
+        self.assertEqual(self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\nB,Ben\n,Missing\nC\nD,x,y\n"),
+                         {**dirty, "replayed": True})
+
+    def test_records_filter_by_issue_code_before_pagination(self):
+        clean = self.ingest()
+        dirty = self.ingest(b"id,name\nA,Ada\nB,Bob\n,Missing\nB,Bill\nC\nB,Ben\n")
+        duplicates = self.store.records(dirty["id"], issues=["duplicate_key"])
+        self.assertEqual([row["number"] for row in duplicates], [2, 4, 6])
+        self.assertTrue(all(row["issues"] == ["duplicate_key"] for row in duplicates))
+        page = self.store.records(dirty["id"], issues=["duplicate_key"], limit=1, offset=1)
+        self.assertEqual([row["number"] for row in page], [4])
+        both = self.store.records(dirty["id"], issues=["missing_key", "column_count"])
+        self.assertEqual([row["number"] for row in both], [3, 5])
+        self.assertEqual(self.store.records(dirty["id"], flagged=False, issues=["missing_key"])[0]["number"], 3)
+        self.assertEqual(self.store.records(clean["id"], issues=["duplicate_key"]), [])
+        for issues in (["unknown"], ["duplicate_key", "Missing_key"], "duplicate_key"):
+            with self.assertRaisesRegex(InvalidInput, "Issue codes"):
+                self.store.records(dirty["id"], issues=issues)
+        with self.assertRaises(NotFound):
+            self.store.records(99, issues=["missing_key"])
+
     def test_diff_counts_and_field_changes_include_source_record_numbers(self):
         before = self.ingest(b"id,name,city\nA,Ada,Boston\nB,Bob,Denver\nC,Cam,Austin\n")
         after = self.ingest(b"id,name,city\nB,Bob,Chicago\nA,Ada,Boston\nD,Dee,Reno\n")
