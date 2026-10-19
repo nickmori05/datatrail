@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from datatrail.errors import InvalidInput
 from datatrail.ingest import MAX_BYTES, parse_csv
+from datatrail.rules import parse_column_types
 
 
 class ParsingTests(unittest.TestCase):
@@ -46,3 +47,37 @@ class ParsingTests(unittest.TestCase):
             parse_csv(b"x" * (MAX_BYTES + 1), "id")
         with patch("datatrail.ingest.MAX_ROWS", 2), self.assertRaisesRegex(InvalidInput, "records"):
             parse_csv(b"id\nA\nB\nC\n", "id")
+
+
+class ColumnTypeTests(unittest.TestCase):
+    def test_typed_columns_flag_rows_with_values_that_do_not_match(self):
+        content = (b"id,qty,price,due\nA,3,9.50,2026-01-31\nB,-4,+.5,2024-02-29\nC,,,\n"
+                   b"D,3.0,1e3,2026-02-30\nE,x,9.5.1,01/02/2026\nF,\xd9\xa3,1,2026-1-2\n")
+        types = {"qty": "integer", "price": "decimal", "due": "date"}
+        _, rows = parse_csv(content, "id", types)
+        self.assertEqual([row.invalid for row in rows], [
+            [], [], [], ["qty", "price", "due"], ["qty", "price", "due"], ["qty", "due"]])
+        self.assertEqual([row.issues for row in rows], [[], [], [], *[["invalid_value"]] * 3])
+
+    def test_type_checks_use_normalized_cells_and_combine_with_other_issues(self):
+        _, rows = parse_csv(b"id,qty\n 7 , 2 \n7,two\n8\n,x\n", "id", {"id": "integer", "qty": "integer"})
+        self.assertEqual([row.issues for row in rows], [
+            ["duplicate_key"], ["duplicate_key", "invalid_value"], ["column_count"], ["missing_key", "invalid_value"]])
+        self.assertEqual([row.invalid for row in rows], [[], ["qty"], [], ["qty"]])
+
+    def test_typed_columns_must_exist_in_the_header(self):
+        with self.assertRaisesRegex(InvalidInput, "Typed column 'amount' is missing"):
+            parse_csv(b"id,name\nA,Ada\n", "id", {"amount": "decimal"})
+
+
+class ColumnTypeSpecTests(unittest.TestCase):
+    def test_specs_are_parsed_by_the_last_colon_and_sorted(self):
+        self.assertEqual(parse_column_types(["total:decimal", " a:b :integer"]), {"a:b": "integer", "total": "decimal"})
+        self.assertEqual(parse_column_types([]), {})
+
+    def test_malformed_unknown_and_repeated_specs_are_rejected(self):
+        for specs in (["amount"], [":integer"], ["amount:money"], ["amount:Integer"], [3], "amount:decimal"):
+            with self.subTest(specs=specs), self.assertRaisesRegex(InvalidInput, "COLUMN:TYPE"):
+                parse_column_types(specs)
+        with self.assertRaisesRegex(InvalidInput, "more than one type"):
+            parse_column_types(["amount:decimal", "amount :integer"])

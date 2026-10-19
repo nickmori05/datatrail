@@ -59,7 +59,8 @@ def main():
         messy = request(base, upload, messy_bytes, expected=201)
         assert messy["rejected_count"] == 4, messy
         assert len(request(base, f"/imports/{messy['id']}/records?flagged=true")) == 4
-        assert messy["issue_counts"] == {"column_count": 1, "missing_key": 1, "duplicate_key": 2}, messy
+        assert messy["issue_counts"] == {"column_count": 1, "missing_key": 1, "duplicate_key": 2,
+                                         "invalid_value": 0}, messy
         duplicates = request(base, f"/imports/{messy['id']}/records?issue=duplicate_key")
         assert [row["number"] for row in duplicates] == [2, 3], duplicates
         request(base, f"/imports/{messy['id']}/records?issue=unknown", expected=422)
