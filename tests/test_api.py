@@ -120,6 +120,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("flagged", response.json()["detail"])
 
+    def test_upload_type_parameters_flag_invalid_values(self):
+        response = self.upload(b"id,price,due\nA,9.50,2026-01-31\nB,9.5.0,2026-13-01\n", dataset="orders",
+                               type=["price:decimal", "due:date"])
+        self.assertEqual(response.status_code, 201, response.text)
+        result = response.json()
+        self.assertEqual((result["column_types"], result["rejected_count"]), ({"due": "date", "price": "decimal"}, 1))
+        rows = self.client.get(f"/imports/{result['id']}/records", params={"issue": "invalid_value"}).json()
+        self.assertEqual([row["invalid_columns"] for row in rows], [["due", "price"]])
+        self.assertEqual(self.upload(b"id,price,due\nA,1,\n", dataset="orders").json()["rejected_count"], 0)
+        self.assertEqual(self.upload(b"id,price,due\nA,1,\n", dataset="orders", type="price:integer").status_code, 409)
+        self.assertEqual(self.upload(b"id,price\nA,1\n", dataset="fresh", type="price:money").status_code, 400)
+        self.assertEqual(self.client.get("/datasets").json()[0]["column_types"], {"due": "date", "price": "decimal"})
+
     def test_records_filter_by_repeated_issue_parameters(self):
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n,Missing\nC\n").json()
         path = f"/imports/{dirty['id']}/records"

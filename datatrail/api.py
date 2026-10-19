@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from .errors import Conflict, InvalidInput, NotFound
-from .ingest import MAX_BYTES
+from .ingest import ISSUE_CODES, MAX_BYTES
 from .store import Store
 
 
@@ -81,9 +81,10 @@ def create_app(database: Path | None = None) -> FastAPI:
     })
     async def import_csv(dataset: str, request: Request, response: Response,
                          key: str = Query(min_length=1, max_length=128),
-                         source_name: str = Query(default="upload.csv", min_length=1, max_length=255)):
+                         source_name: str = Query(default="upload.csv", min_length=1, max_length=255),
+                         column_types: list[str] = Query(default=[], alias="type")):
         content = await read_csv(request)
-        result = await run_in_threadpool(store.import_csv, dataset, key, content, source_name)
+        result = await run_in_threadpool(store.import_csv, dataset, key, content, source_name, column_types)
         response.status_code = 200 if result["replayed"] else 201
         response.headers["Location"] = f"/imports/{result['id']}"
         return result
@@ -103,7 +104,7 @@ def create_app(database: Path | None = None) -> FastAPI:
     @app.get("/imports/{identifier}/records")
     def records(identifier: int, flagged: bool = False, limit: int = Query(default=100, ge=1, le=1000),
                 offset: int = Query(default=0, ge=0),
-                issue: list[Literal["column_count", "missing_key", "duplicate_key"]] = Query(default=[])):
+                issue: list[Literal[ISSUE_CODES]] = Query(default=[])):
         return store.records(identifier, flagged=flagged, issues=issue, limit=limit, offset=offset)
 
     @app.get("/imports/{identifier}/source")

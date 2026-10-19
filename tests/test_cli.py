@@ -76,6 +76,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, output), (2, ""))
         self.assertIn("does not exist", errors)
 
+    def test_import_type_option_flags_invalid_values(self):
+        source = self.database.with_name("orders.csv")
+        source.write_text("id,qty\nA,2\nB,two\n")
+        code, output, errors = self.call("import", "orders", str(source), "--key", "id", "--type", "qty:integer")
+        self.assertEqual(code, 1, errors)
+        result = json.loads(output)
+        self.assertEqual((result["column_types"], result["issue_counts"]["invalid_value"]), ({"qty": "integer"}, 1))
+        _, output, _ = self.call("records", str(result["id"]), "--issue", "invalid_value")
+        self.assertEqual([(row["number"], row["invalid_columns"]) for row in json.loads(output)], [(2, ["qty"])])
+        for spec, message in (("qty:money", "COLUMN:TYPE"), ("qty:decimal", "cannot change")):
+            code, output, errors = self.call("import", "orders", str(source), "--key", "id", "--type", spec)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_diff_kind_option_limits_listed_changes(self):
         ids = []
         for fixture in ("suppliers-before.csv", "suppliers-after.csv"):
