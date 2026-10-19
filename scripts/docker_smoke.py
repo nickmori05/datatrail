@@ -86,7 +86,8 @@ def main():
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality and type checks, diffs, latest changes, provenance and CLI reads passed.", flush=True)
+        print("HTTP imports, retries, quality and type checks, diffs, latest changes, provenance and CLI reads passed.",
+              flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

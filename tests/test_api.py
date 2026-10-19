@@ -114,7 +114,8 @@ class ApiTests(unittest.TestCase):
         details = self.client.get(f"/imports/{dirty.json()['id']}").json()
         self.assertEqual(details["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 2,
                                                   "invalid_value": 0})
-        rows = self.client.get(f"/imports/{dirty.json()['id']}/records", params={"flagged": True, "limit": 1, "offset": 1}).json()
+        rows = self.client.get(f"/imports/{dirty.json()['id']}/records",
+                               params={"flagged": True, "limit": 1, "offset": 1}).json()
         self.assertEqual(rows[0]["number"], 3)
         response = self.client.get("/diff", params={"before": clean["id"], "after": dirty.json()["id"]})
         self.assertEqual(response.status_code, 409)
@@ -191,7 +192,7 @@ class UploadStreamTests(unittest.IsolatedAsyncioTestCase):
                         [(b"content-type", b"text/csv"), (b"content-length", b"1")]):
             with self.subTest(headers=headers):
                 chunks = iter([b"id\n", b"AAAA", b"BBBB"])
-                async def receive():
+                async def receive(chunks=chunks):
                     return {"type": "http.request", "body": next(chunks), "more_body": True}
                 request = Request({"type": "http", "headers": headers}, receive=receive)
                 with patch("datatrail.api.MAX_BYTES", 8):

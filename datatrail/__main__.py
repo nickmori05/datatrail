@@ -42,7 +42,8 @@ def parser():
     changes.add_argument("--since", type=int, help="Compare from this clean version instead of the second newest")
     changes.add_argument("--until", type=int, help="Compare up to this clean version instead of the newest")
     for command in (diff, changes):
-        command.add_argument("--kind", action="append", choices=CHANGE_KINDS, help="Only list this kind of change; repeatable")
+        command.add_argument("--kind", action="append", choices=CHANGE_KINDS,
+                             help="Only list this kind of change; repeatable")
     for command in (datasets, imports, records, trace, diff, changes):
         command.add_argument("--limit", type=int, default=100)
         command.add_argument("--offset", type=int, default=0)

@@ -1,5 +1,5 @@
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
@@ -94,7 +94,8 @@ class Store:
 
     def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
-            raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, starting with a letter or digit.")
+            raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, "
+                               "starting with a letter or digit.")
         if not source_name or len(source_name) > 255 or any(ord(char) < 32 for char in source_name):
             raise InvalidInput("Source name must be 1–255 characters without control characters.")
         # Omitted column types mean "use the dataset's saved types"; a new dataset then has none.
@@ -134,7 +135,7 @@ class Store:
                 """INSERT INTO imports (dataset_id, version, source_name, sha256, imported_at,
                    headers_json, row_count, accepted_count, rejected_count, source)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (dataset_id, version, source_name, digest, datetime.now(timezone.utc).isoformat(),
+                (dataset_id, version, source_name, digest, datetime.now(UTC).isoformat(),
                  json.dumps(headers), len(rows), accepted, len(rows) - accepted, content),
             ).lastrowid
             connection.executemany(

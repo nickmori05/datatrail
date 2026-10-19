@@ -38,7 +38,8 @@ async def read_csv(request: Request) -> bytes:
 
 
 def create_app(database: Path | None = None) -> FastAPI:
-    store = Store(database if database is not None else Path(os.environ.get("DATATRAIL_DB", ".local/datatrail.sqlite3")))
+    store = Store(database if database is not None
+                  else Path(os.environ.get("DATATRAIL_DB", ".local/datatrail.sqlite3")))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -127,7 +128,8 @@ def create_app(database: Path | None = None) -> FastAPI:
         return store.latest_changes(dataset, limit, offset, kinds=kind, since=since, until=until)
 
     @app.get("/diff")
-    def diff(before: int, after: int, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
+    def diff(before: int, after: int, limit: int = Query(default=100, ge=1, le=1000),
+             offset: int = Query(default=0, ge=0),
              kind: list[Literal["added", "removed", "changed"]] = Query(default=[])):
         return store.diff(before, after, limit, offset, kinds=kind)
 

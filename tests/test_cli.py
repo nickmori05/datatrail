@@ -26,9 +26,12 @@ class CliTests(unittest.TestCase):
             code = main(["--database", str(self.database), *args])
         return code, output.getvalue(), errors.getvalue()
 
+    def import_example(self, fixture):
+        return self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+
     def test_clean_and_flagged_import_exit_codes(self):
         for fixture, code in (("suppliers-before.csv", 0), ("suppliers-messy.csv", 1)):
-            actual, output, errors = self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+            actual, output, errors = self.import_example(fixture)
             self.assertEqual(actual, code, errors)
             self.assertEqual(bool(json.loads(output)["rejected_count"]), bool(code))
         code, output, _ = self.call("imports", "suppliers")
@@ -47,14 +50,15 @@ class CliTests(unittest.TestCase):
         for fixture, expected_counts, issues in (("suppliers-before.csv", (3, 3, 0), (0, 0, 0, 0)),
                                                  ("suppliers-messy.csv", (5, 1, 4), (1, 1, 2, 0))):
             with self.subTest(fixture=fixture):
-                _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+                _, output, _ = self.import_example(fixture)
                 imported = json.loads(output)
                 code, output, errors = self.call("show", str(imported["id"]))
                 self.assertEqual(code, 0, errors)
                 details = json.loads(output)
                 self.assertEqual(details, {key: value for key, value in imported.items() if key != "replayed"})
-                self.assertEqual((details["row_count"], details["accepted_count"], details["rejected_count"]), expected_counts)
-                self.assertEqual(details["issue_counts"], dict(zip(ISSUE_CODES, issues)))
+                counts = (details["row_count"], details["accepted_count"], details["rejected_count"])
+                self.assertEqual(counts, expected_counts)
+                self.assertEqual(details["issue_counts"], dict(zip(ISSUE_CODES, issues, strict=True)))
                 self.assertEqual(details["source_name"], fixture)
                 self.assertEqual(details["key_column"], "supplier_id")
                 self.assertNotIn("source", details)
@@ -62,7 +66,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(json.loads(output)), 2)
 
     def test_records_issue_option_lists_rows_with_that_code(self):
-        _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / "suppliers-messy.csv"), "--key", "supplier_id")
+        _, output, _ = self.import_example("suppliers-messy.csv")
         identifier = str(json.loads(output)["id"])
         code, output, errors = self.call("records", identifier, "--issue", "duplicate_key")
         self.assertEqual(code, 0, errors)
@@ -93,7 +97,7 @@ class CliTests(unittest.TestCase):
     def test_diff_kind_option_limits_listed_changes(self):
         ids = []
         for fixture in ("suppliers-before.csv", "suppliers-after.csv"):
-            _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+            _, output, _ = self.import_example(fixture)
             ids.append(str(json.loads(output)["id"]))
         code, output, errors = self.call("diff", *ids, "--kind", "changed")
         self.assertEqual(code, 0, errors)
@@ -109,7 +113,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("does not exist", errors)
         for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
-            self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+            self.import_example(fixture)
         code, output, errors = self.call("changes", "suppliers", "--kind", "removed")
         self.assertEqual(code, 0, errors)
         result = json.loads(output)
@@ -119,7 +123,7 @@ class CliTests(unittest.TestCase):
 
     def test_changes_since_picks_an_older_baseline(self):
         for fixture in ("suppliers-before.csv", "suppliers-messy.csv", "suppliers-after.csv"):
-            self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+            self.import_example(fixture)
         code, output, errors = self.call("changes", "suppliers", "--since", "1")
         self.assertEqual(code, 0, errors)
         result = json.loads(output)
@@ -132,13 +136,14 @@ class CliTests(unittest.TestCase):
 
     def test_changes_until_picks_an_older_end_version(self):
         for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
-            self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
+            self.import_example(fixture)
         code, output, errors = self.call("changes", "suppliers", "--until", "2", "--kind", "changed")
         self.assertEqual(code, 0, errors)
         result = json.loads(output)
         self.assertEqual((result["before_version"], result["after_version"]), (1, 2))
         self.assertEqual((result["skipped_flagged"], [change["key"] for change in result["changes"]]), ([], ["S002"]))
-        for args, message in ((("--until", "3"), "cannot be an end version"), (("--until", "1"), "older than version 1"),
+        for args, message in ((("--until", "3"), "cannot be an end version"),
+                              (("--until", "1"), "older than version 1"),
                               (("--since", "2", "--until", "1"), "older version than until")):
             code, output, errors = self.call("changes", "suppliers", *args)
             self.assertEqual((code, output), (2, ""))

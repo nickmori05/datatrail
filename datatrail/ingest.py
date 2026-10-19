@@ -64,7 +64,7 @@ def parse_csv(content: bytes, key_column: str,
             if len(raw) != len(headers):
                 issues.append("column_count")
             else:
-                data = dict(zip(headers, (value.strip() for value in raw)))
+                data = dict(zip(headers, (value.strip() for value in raw), strict=True))
                 key = data[key_column]
                 if not key:
                     issues.append("missing_key")
