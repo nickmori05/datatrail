@@ -1,7 +1,8 @@
 CREATE TABLE IF NOT EXISTS datasets (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
-    key_column TEXT NOT NULL
+    key_column TEXT NOT NULL,
+    column_types_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS imports (
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS records (
     data_json TEXT,
     issues_json TEXT NOT NULL,
     issue_count INTEGER NOT NULL,
+    invalid_columns_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY(import_id, number)
 );
 

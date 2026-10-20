@@ -19,8 +19,8 @@ class StoreTests(unittest.TestCase):
         self.store = Store(self.database)
         self.store.initialize()
 
-    def ingest(self, content=b"id,name\nA,Ada\n", dataset="suppliers", key="id"):
-        return self.store.import_csv(dataset, key, content, "feed.csv")
+    def ingest(self, content=b"id,name\nA,Ada\n", dataset="suppliers", key="id", types=None):
+        return self.store.import_csv(dataset, key, content, "feed.csv", types)
 
     def test_import_retains_original_bytes_hash_and_provenance_after_restart(self):
         content = b"id,name\r\n A , Ada \r\n"
@@ -46,6 +46,63 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.ingest(key="name")
         self.assertEqual(len(self.store.imports("suppliers")), 1)
+
+    def test_column_types_flag_invalid_values_and_apply_to_later_imports(self):
+        first = self.ingest(b"id,qty,due\nA,2,2026-01-31\nB,two,2026-02-30\nC,,\n", "orders",
+                            types=["qty:integer", "due:date"])
+        self.assertEqual(first["column_types"], {"due": "date", "qty": "integer"})
+        counts = (first["accepted_count"], first["rejected_count"], first["issue_counts"]["invalid_value"])
+        self.assertEqual(counts, (2, 1, 1))
+        row, = self.store.records(first["id"], issues=["invalid_value"])
+        self.assertEqual((row["number"], row["issues"], row["invalid_columns"]), (2, ["invalid_value"], ["due", "qty"]))
+        self.assertEqual(self.store.records(first["id"])[0]["invalid_columns"], [])
+        self.assertEqual(self.ingest(b"id,qty,due\nA,x,2026-01-31\n", "orders")["rejected_count"], 1)
+        repeated = self.ingest(b"id,qty,due\nA,3,\n", "orders", types=["due:date", "qty:integer"])
+        self.assertEqual(repeated["rejected_count"], 0)
+        self.assertEqual(self.store.datasets()[0]["column_types"], {"due": "date", "qty": "integer"})
+
+    def test_column_types_are_fixed_per_dataset_and_bad_rules_save_nothing(self):
+        self.ingest()
+        with self.assertRaisesRegex(Conflict, "column types cannot change"):
+            self.ingest(b"id,name\nA,1\n", types=["name:integer"])
+        self.ingest(b"id,qty\nA,1\n", "orders", types=["qty:integer"])
+        for types in (["qty:decimal"], ["qty:integer", "id:integer"]):
+            with self.assertRaisesRegex(Conflict, "column types cannot change"):
+                self.ingest(b"id,qty\nA,1\n", "orders", types=types)
+        for content, dataset, types, message in (
+                (b"id,qty\nA,1\n", "fresh", ["qty:money"], "COLUMN:TYPE"),
+                (b"id,name\nA,1\n", "fresh", ["qty:integer"], "Typed column 'qty' is missing"),
+                (b"id,name\nA,Ada\n", "orders", None, "Typed column 'qty' is missing")):
+            with self.subTest(types=types), self.assertRaisesRegex(InvalidInput, message):
+                self.ingest(content, dataset, types=types)
+        self.assertEqual([dataset["name"] for dataset in self.store.datasets()], ["orders", "suppliers"])
+        self.assertEqual(len(self.store.imports("orders")), 1)
+
+    def test_databases_created_before_column_types_are_upgraded_in_place(self):
+        legacy = self.database.with_name("legacy.sqlite3")
+        content = b"id,name\nA,Ada\n"
+        with closing(sqlite3.connect(legacy)) as connection:
+            connection.executescript((Path(__file__).parent / "fixtures" / "schema-0.1.0.sql").read_text())
+            connection.execute("INSERT INTO datasets VALUES (1, 'suppliers', 'id')")
+            connection.execute("INSERT INTO imports VALUES (1, 1, 1, 'old.csv', ?, '2026-01-01T00:00:00+00:00', "
+                               "'[\"id\", \"name\"]', 1, 1, 0, ?)", (hashlib.sha256(content).hexdigest(), content))
+            connection.execute("""INSERT INTO records VALUES (1, 1, 2, 'A', '["A", "Ada"]',
+                                  '{"id": "A", "name": "Ada"}', '[]', 0)""")
+            connection.commit()
+        store = Store(legacy)
+        store.initialize()
+        store.initialize()
+        old = store.get_import(1)
+        self.assertEqual((old["column_types"], old["issue_counts"]["invalid_value"]), ({}, 0))
+        self.assertEqual(store.records(1)[0]["invalid_columns"], [])
+        self.assertEqual(store.import_csv("suppliers", "id", content, "again.csv")["replayed"], True)
+        new = store.import_csv("suppliers", "id", b"id,name\nA,Ada Lovelace\n", "new.csv")
+        self.assertEqual(store.latest_changes("suppliers")["counts"]["changed"], 1)
+        self.assertEqual(new["column_types"], {})
+        with self.assertRaisesRegex(Conflict, "column types"):
+            store.import_csv("suppliers", "id", b"id,name\nA,1\n", "typed.csv", ["name:integer"])
+        typed = store.import_csv("orders", "id", b"id,qty\nA,x\n", "typed.csv", ["qty:integer"])
+        self.assertEqual(store.records(typed["id"])[0]["invalid_columns"], ["qty"])
 
     def test_invalid_csv_never_creates_a_dataset(self):
         with self.assertRaises(InvalidInput):
@@ -93,9 +150,10 @@ class StoreTests(unittest.TestCase):
 
     def test_issue_counts_break_down_flagged_rows_by_code(self):
         clean = self.ingest()
-        self.assertEqual(clean["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 0})
+        self.assertEqual(clean["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 0,
+                                                 "invalid_value": 0})
         dirty = self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\nB,Ben\n,Missing\nC\nD,x,y\n")
-        expected = {"column_count": 2, "missing_key": 1, "duplicate_key": 3}
+        expected = {"column_count": 2, "missing_key": 1, "duplicate_key": 3, "invalid_value": 0}
         self.assertEqual(dirty["issue_counts"], expected)
         self.assertEqual(sum(expected.values()), dirty["rejected_count"])
         self.assertEqual(self.store.get_import(dirty["id"])["issue_counts"], expected)

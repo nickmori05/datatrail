@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from datatrail.__main__ import main
+from datatrail.ingest import ISSUE_CODES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,8 +44,8 @@ class CliTests(unittest.TestCase):
             self.assertTrue(errors.startswith("Error:"))
 
     def test_show_reports_saved_metadata_for_clean_and_flagged_imports(self):
-        for fixture, expected_counts, issues in (("suppliers-before.csv", (3, 3, 0), (0, 0, 0)),
-                                                 ("suppliers-messy.csv", (5, 1, 4), (1, 1, 2))):
+        for fixture, expected_counts, issues in (("suppliers-before.csv", (3, 3, 0), (0, 0, 0, 0)),
+                                                 ("suppliers-messy.csv", (5, 1, 4), (1, 1, 2, 0))):
             with self.subTest(fixture=fixture):
                 _, output, _ = self.call("import", "suppliers", str(ROOT / "examples" / fixture), "--key", "supplier_id")
                 imported = json.loads(output)
@@ -53,7 +54,7 @@ class CliTests(unittest.TestCase):
                 details = json.loads(output)
                 self.assertEqual(details, {key: value for key, value in imported.items() if key != "replayed"})
                 self.assertEqual((details["row_count"], details["accepted_count"], details["rejected_count"]), expected_counts)
-                self.assertEqual(details["issue_counts"], dict(zip(("column_count", "missing_key", "duplicate_key"), issues)))
+                self.assertEqual(details["issue_counts"], dict(zip(ISSUE_CODES, issues)))
                 self.assertEqual(details["source_name"], fixture)
                 self.assertEqual(details["key_column"], "supplier_id")
                 self.assertNotIn("source", details)
@@ -74,6 +75,20 @@ class CliTests(unittest.TestCase):
         code, output, errors = self.call("records", "999", "--issue", "missing_key")
         self.assertEqual((code, output), (2, ""))
         self.assertIn("does not exist", errors)
+
+    def test_import_type_option_flags_invalid_values(self):
+        source = self.database.with_name("orders.csv")
+        source.write_text("id,qty\nA,2\nB,two\n")
+        code, output, errors = self.call("import", "orders", str(source), "--key", "id", "--type", "qty:integer")
+        self.assertEqual(code, 1, errors)
+        result = json.loads(output)
+        self.assertEqual((result["column_types"], result["issue_counts"]["invalid_value"]), ({"qty": "integer"}, 1))
+        _, output, _ = self.call("records", str(result["id"]), "--issue", "invalid_value")
+        self.assertEqual([(row["number"], row["invalid_columns"]) for row in json.loads(output)], [(2, ["qty"])])
+        for spec, message in (("qty:money", "COLUMN:TYPE"), ("qty:decimal", "cannot change")):
+            code, output, errors = self.call("import", "orders", str(source), "--key", "id", "--type", spec)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
 
     def test_diff_kind_option_limits_listed_changes(self):
         ids = []
@@ -136,8 +151,11 @@ class CliTests(unittest.TestCase):
         demo = json.loads(result.stdout)
         self.assertEqual(demo["comparison"]["counts"], {"added": 1, "removed": 1, "changed": 1, "unchanged": 1})
         self.assertEqual(len(demo["flagged_records"]), 4)
-        self.assertEqual(demo["issue_counts"], {"column_count": 1, "missing_key": 1, "duplicate_key": 2})
+        self.assertEqual(demo["issue_counts"], {"column_count": 1, "missing_key": 1, "duplicate_key": 2,
+                                                "invalid_value": 0})
         self.assertEqual([row["version"] for row in demo["supplier_trail"]], [3, 3, 2, 1])
         latest = demo["latest_changes"]
         self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
+        self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
+                         [(3, ["amount"]), (4, ["due_date"])])

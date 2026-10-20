@@ -20,9 +20,10 @@ python3 scripts/demo.py
 ```
 
 The demo uses a temporary database, prints the comparison, flagged records, the
-messy export's issue counts, the history of supplier `S002`, and the latest
-clean changes (skipping the messy export), then removes its temporary files. All example
-suppliers are fictional.
+messy export's issue counts, the history of supplier `S002`, the latest clean
+changes (skipping the messy export), and invoice rows whose amount or due date
+fails a column type check, then removes its temporary files. All example data is
+fictional.
 
 For a persistent workspace:
 
@@ -40,6 +41,9 @@ python3 -m datatrail trace suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
 python3 -m datatrail records 3 --issue duplicate_key
+python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
+  --type amount:decimal --type due_date:date
+python3 -m datatrail records 4 --issue invalid_value
 ```
 
 The numeric IDs above assume a fresh database; use the IDs returned by your
@@ -48,7 +52,7 @@ working directory. Set `DATATRAIL_DB` or put `--database PATH` before the comman
 to use another file. Local data is excluded from Git.
 
 `show ID` prints one import's source name, SHA-256 hash, timestamp, columns,
-accepted/flagged record counts, and flagged rows per issue code as JSON. It does not re-import the file or print
+accepted/flagged record counts, column types, and flagged rows per issue code as JSON. It does not re-import the file or print
 its contents. Inspecting an import with flagged rows still exits `0`; a missing
 ID exits `2`.
 
@@ -73,11 +77,12 @@ curl 'http://127.0.0.1:8000/datasets/suppliers/trace?key=S002'
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/datasets/{name}/imports?key=column&source_name=file.csv` | Upload raw CSV bytes |
+| POST | `/datasets/{name}/imports?key=column&type=amount:decimal` | Upload with column type checks |
 | GET | `/datasets` | List datasets |
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect questionable rows |
-| GET | `/imports/{id}/records?issue=duplicate_key` | Inspect rows with one kind of issue |
+| GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
 | GET | `/imports/{id}/source` | Download exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized entity key |
 | GET | `/diff?before=1&after=2&kind=changed` | Compare clean snapshots |
@@ -92,8 +97,8 @@ Readiness does not prove writes will succeed. Lists and diffs accept `limit` and
 exact retry, with a `Location` header pointing to the import. Flagged rows still
 produce a saved import; inspect `rejected_count` and `issue_counts` in the response.
 
-Invalid CSV returns `400`, missing resources `404`, conflicting dataset keys or
-unclean comparisons `409`, oversized uploads `413`, wrong content type `415`,
+Invalid CSV or column type rules return `400`, missing resources `404`,
+conflicting dataset keys or column types and unclean comparisons `409`, oversized uploads `413`, wrong content type `415`,
 and invalid query parameters `422`. Storage errors return `503`. The upload
 size is checked as bytes arrive, even without a reliable Content-Length.
 The API never fetches remote URLs or opens a client-supplied server file path.
@@ -132,6 +137,8 @@ There is no background daemon or watcher outside the API container.
   file. Row-level issues are saved with their raw cells for investigation.
 - Blank physical rows are skipped. A header-only file is a valid empty snapshot.
   Comparing it against a populated snapshot reports removals.
+- Optional column types flag rows whose values are not integers, decimals or
+  dates (see below) with `invalid_value`.
 
 Every import is a full snapshot of one dataset, not a patch or event stream.
 Importing the exact same bytes into the same dataset returns the original import
@@ -139,6 +146,34 @@ with `replayed: true`, even if the filename changed. Its original source label
 and timestamp remain. Whitespace-only file changes create a new snapshot but may
 produce no normalized value changes. Versions reflect database commit order,
 not dates inside the supplied files.
+
+## Column types
+
+`import --type COLUMN:TYPE` (repeatable; `type=` in the API) declares that a
+column holds one kind of value. Rows with a nonmatching value are flagged with
+`invalid_value` and kept, like any other flagged row, so the import cannot be
+compared until a clean file arrives.
+
+| Type | Accepts | Rejects |
+| --- | --- | --- |
+| `integer` | `42`, `-7`, `+003` | `4.0`, `1e3`, `1,000` |
+| `decimal` | `9.50`, `-.5`, `12.` | `9.5.1`, `1e3`, `$9`, `1,000` |
+| `date` | `2026-02-28`, calendar-valid ISO `YYYY-MM-DD` | `2026-02-30`, `02/28/2026`, `2026-2-28` |
+
+Checks use the trimmed value and ASCII digits only. Empty cells are not checked,
+so a type does not make a column required. A key column can be typed too.
+`records` lists the failing columns of each row in `invalid_columns`, and
+imports count those rows under `invalid_value` in `issue_counts`.
+
+Types are saved with the dataset when it is created, like its key column. Later
+imports may omit `--type` and are checked against the saved types, or repeat
+the same set; a different set is a conflict (`409` in the API), so every
+version of a dataset is checked by the same rules. A typed column missing from
+the header, or a malformed or unknown type, rejects the file (`400`).
+`datasets`, `show` and import responses include `column_types`.
+
+Databases created before column types existed are upgraded in place on
+startup. Their datasets have no types, so their imports behave as before.
 
 ## Investigation
 
@@ -149,8 +184,8 @@ including flagged duplicates. Absence from a snapshot is shown by `diff`, not
 as a synthetic row in `trace`.
 
 Imports report `issue_counts`: how many rows carry each issue code
-(`column_count`, `missing_key`, `duplicate_key`), with zeros for codes that did
-not occur. A row is counted once per code it carries, so a large flagged export
+(`column_count`, `missing_key`, `duplicate_key`, `invalid_value`), with zeros for
+codes that did not occur. A row is counted once per code it carries, so a large flagged export
 can be triaged without paging through every row. `records --issue CODE`
 (repeatable; `issue=` in the API) lists only flagged rows with any of those
 codes, in source order and before pagination. It works with or without
@@ -238,7 +273,7 @@ python3 scripts/docker_smoke.py
 
 The integration check creates its own temporary Compose project, image, database
 volume, and dynamically assigned localhost port. It exercises the real HTTP
-server, duplicate upload handling, quality reports and issue filters, diffs, latest-change,
+server, duplicate upload handling, quality reports and issue filters, column type checks, diffs, latest-change,
 baseline-version and end-version lookups, exact source downloads, CLI/API interoperability, and
 persistence across container recreation. It removes its containers, volume, network, and image
 afterward. Regular workspace data is

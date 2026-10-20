@@ -18,6 +18,9 @@ def parser():
     ingest.add_argument("dataset")
     ingest.add_argument("file", type=Path)
     ingest.add_argument("--key", required=True)
+    ingest.add_argument("--type", action="append", dest="column_types", metavar="COLUMN:TYPE",
+                        help="Flag rows whose COLUMN is not a TYPE (integer, decimal or date); repeatable, "
+                             "fixed for the dataset")
     datasets = commands.add_parser("datasets", help="List datasets")
     imports = commands.add_parser("imports", help="List dataset snapshots")
     imports.add_argument("dataset")
@@ -55,7 +58,7 @@ def main(argv=None):
         if args.command == "import":
             with args.file.open("rb") as source:
                 content = source.read(MAX_BYTES + 1)
-            result = store.import_csv(args.dataset, args.key, content, args.file.name)
+            result = store.import_csv(args.dataset, args.key, content, args.file.name, args.column_types)
             code = 1 if result["rejected_count"] else 0
         elif args.command == "datasets":
             result = store.datasets(args.limit, args.offset)

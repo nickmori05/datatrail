@@ -8,11 +8,15 @@ import sqlite3
 
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
+from .rules import parse_column_types
 
 
 CHANGE_KINDS = ("added", "removed", "changed")
-IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, i.version, i.source_name,
+IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, d.column_types_json, i.version, i.source_name,
     i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
+# Columns added after the first release. Older databases gain them, with their defaults, on startup.
+ADDED_COLUMNS = (("datasets", "column_types_json", "TEXT NOT NULL DEFAULT '{}'"),
+                 ("records", "invalid_columns_json", "TEXT NOT NULL DEFAULT '[]'"))
 
 
 def page_args(limit: int, offset: int):
@@ -32,19 +36,20 @@ def change_kinds(kinds) -> list[str]:
 
 def issue_codes(codes) -> list[str]:
     if any(code not in ISSUE_CODES for code in codes):
-        raise InvalidInput("Issue codes must be column_count, missing_key or duplicate_key.")
+        raise InvalidInput(f"Issue codes must be one of {', '.join(ISSUE_CODES)}.")
     return [code for code in ISSUE_CODES if code in codes]
 
 
 def import_dict(row) -> dict:
     result = dict(row)
     result["headers"] = json.loads(result.pop("headers_json"))
+    result["column_types"] = json.loads(result.pop("column_types_json"))
     return result
 
 
 def record_dict(row) -> dict:
     result = dict(row)
-    for name in ("raw", "data", "issues"):
+    for name in ("raw", "data", "issues", "invalid_columns"):
         value = result.pop(f"{name}_json")
         result[name] = json.loads(value) if value is not None else None
     result.pop("issue_count", None)
@@ -65,6 +70,10 @@ class Store:
         self.database.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.connect()) as connection:
             connection.executescript(Path(__file__).with_name("schema.sql").read_text())
+            connection.execute("BEGIN IMMEDIATE")
+            for table, column, definition in ADDED_COLUMNS:
+                if column not in {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             connection.commit()
 
     def _import(self, connection, identifier: int) -> dict:
@@ -83,12 +92,20 @@ class Store:
         result["issue_counts"] = {code: counts.get(code, 0) for code in ISSUE_CODES}
         return result
 
-    def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str) -> dict:
+    def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
             raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, starting with a letter or digit.")
         if not source_name or len(source_name) > 255 or any(ord(char) < 32 for char in source_name):
             raise InvalidInput("Source name must be 1–255 characters without control characters.")
-        headers, rows = parse_csv(content, key_column)
+        # Omitted column types mean "use the dataset's saved types"; a new dataset then has none.
+        types = parse_column_types(column_types) if column_types else None
+        if types is None:
+            with closing(self.connect()) as connection:
+                saved = connection.execute(
+                    "SELECT column_types_json FROM datasets WHERE name = ?", (dataset,)
+                ).fetchone()
+            types = json.loads(saved["column_types_json"]) if saved else {}
+        headers, rows = parse_csv(content, key_column, types)
         digest = hashlib.sha256(content).hexdigest()
         accepted = sum(not row.issues for row in rows)
         with closing(self.connect()) as connection, connection:
@@ -96,11 +113,14 @@ class Store:
             existing = connection.execute("SELECT * FROM datasets WHERE name = ?", (dataset,)).fetchone()
             if existing is None:
                 dataset_id = connection.execute(
-                    "INSERT INTO datasets (name, key_column) VALUES (?, ?)", (dataset, key_column)
+                    "INSERT INTO datasets (name, key_column, column_types_json) VALUES (?, ?, ?)",
+                    (dataset, key_column, json.dumps(types)),
                 ).lastrowid
             else:
                 if existing["key_column"] != key_column:
                     raise Conflict("A dataset's key column cannot change. Use a new dataset name.")
+                if json.loads(existing["column_types_json"]) != types:
+                    raise Conflict("A dataset's column types cannot change. Use a new dataset name.")
                 dataset_id = existing["id"]
             previous = connection.execute(
                 "SELECT id FROM imports WHERE dataset_id = ? AND sha256 = ?", (dataset_id, digest)
@@ -119,18 +139,19 @@ class Store:
             ).lastrowid
             connection.executemany(
                 """INSERT INTO records (import_id, number, source_line, entity_key, raw_json,
-                   data_json, issues_json, issue_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   data_json, issues_json, issue_count, invalid_columns_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 ((identifier, row.number, row.line, row.key, json.dumps(row.raw),
                   json.dumps(row.data) if row.data is not None else None,
-                  json.dumps(row.issues), len(row.issues)) for row in rows),
+                  json.dumps(row.issues), len(row.issues), json.dumps(row.invalid)) for row in rows),
             )
             return {**self._import(connection, identifier), "replayed": False}
 
     def datasets(self, limit=100, offset=0) -> list[dict]:
         page_args(limit, offset)
         with closing(self.connect()) as connection:
-            return [dict(row) for row in connection.execute(
-                """SELECT d.name, d.key_column, COUNT(i.id) AS import_count, MAX(i.version) AS latest_version
+            return [{**dict(row), "column_types": json.loads(row["column_types"])} for row in connection.execute(
+                """SELECT d.name, d.key_column, d.column_types_json AS column_types, COUNT(i.id) AS import_count,
+                   MAX(i.version) AS latest_version
                    FROM datasets d LEFT JOIN imports i ON i.dataset_id = d.id
                    GROUP BY d.id ORDER BY d.name LIMIT ? OFFSET ?""", (limit, offset)
             )]
