@@ -1,5 +1,7 @@
 """Compare loaded snapshots by key without touching storage."""
 
+from collections.abc import Iterator
+
 
 def changed_fields(before: dict | None, after: dict | None) -> dict:
     """Fields whose values differ, by name. A field missing on one side is None there; an empty one is ""."""
@@ -17,6 +19,12 @@ def change_kind(left: dict | None, right: dict | None) -> str:
     return "unchanged" if left["data"] == right["data"] else "changed"
 
 
+def change_entry(key: str, kind: str, left: dict | None, right: dict | None) -> dict:
+    """One key's change between two snapshots: its kind, changed fields and record numbers on each side."""
+    return {"key": key, "kind": kind, "fields": changed_fields(left and left["data"], right and right["data"]),
+            "before_record": left["number"] if left else None, "after_record": right["number"] if right else None}
+
+
 def compare(old: dict, new: dict, kinds: list[str], limit: int, offset: int) -> dict:
     """Count every key's change kind and list one page of the requested kinds, in key order.
 
@@ -32,12 +40,18 @@ def compare(old: dict, new: dict, kinds: list[str], limit: int, offset: int) -> 
         if kind not in kinds:
             continue
         if offset <= total < offset + limit:
-            changes.append({"key": key, "kind": kind,
-                            "fields": changed_fields(left and left["data"], right and right["data"]),
-                            "before_record": left["number"] if left else None,
-                            "after_record": right["number"] if right else None})
+            changes.append(change_entry(key, kind, left, right))
         total += 1
     return {"counts": counts, "changes": changes, "total_changes": total}
+
+
+def iter_changes(old: dict, new: dict, kinds: list[str]) -> Iterator[dict]:
+    """Yield every change of the requested kinds in key order, building each one only when it is reached."""
+    for key in sorted(old.keys() | new.keys()):
+        left, right = old.get(key), new.get(key)
+        kind = change_kind(left, right)
+        if kind in kinds:
+            yield change_entry(key, kind, left, right)
 
 
 def key_history(snapshots: list[dict], records: dict) -> list[dict]:

@@ -1,5 +1,6 @@
 """SQLite storage for datasets, imports and records, and the queries that compare them."""
 
+from collections.abc import Iterator
 from contextlib import closing
 from datetime import UTC, datetime
 import hashlib
@@ -9,7 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .compare import compare, key_history
+from .compare import compare, iter_changes, key_history
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import parse_column_types
@@ -303,13 +304,11 @@ class Store:
             params.append(below)
         return connection.execute(query + " ORDER BY i.version DESC LIMIT ?", (*params, count)).fetchall()
 
-    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None) -> dict:
-        """Diff two clean snapshots chosen by version: the two newest by default, or `since`/`until`.
+    def select_versions(self, dataset: str, since=None, until=None) -> dict:
+        """Pick two clean snapshots by version: the two newest by default, or `since`/`until`.
 
-        Adds the compared versions and `skipped_flagged`, the flagged imports inside the compared range.
+        Returns their IDs and versions and `skipped_flagged`, the flagged imports inside the compared range.
         """
-        check_page(limit, offset)
-        kinds = change_kinds(kinds)
         with closing(self.connect()) as connection:
             self._dataset(connection, dataset)
             if since is not None:
@@ -344,14 +343,42 @@ class Store:
                 query += " AND i.version < ?"
                 params.append(until)
             skipped = [dict(row) for row in connection.execute(query + " ORDER BY i.version DESC", params)]
-        result = self.diff(clean[1]["id"], clean[0]["id"], limit, offset, kinds)
-        return {"dataset": dataset, "before_version": clean[1]["version"], "after_version": clean[0]["version"],
-                "skipped_flagged": skipped, **result}
+        return {"dataset": dataset, "before_id": clean[1]["id"], "after_id": clean[0]["id"],
+                "before_version": clean[1]["version"], "after_version": clean[0]["version"],
+                "skipped_flagged": skipped}
+
+    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None) -> dict:
+        """Diff the clean snapshots chosen by `select_versions`, adding their versions and `skipped_flagged`."""
+        check_page(limit, offset)
+        kinds = change_kinds(kinds)
+        selected = self.select_versions(dataset, since, until)
+        result = self.diff(selected["before_id"], selected["after_id"], limit, offset, kinds)
+        return {"dataset": dataset, "before_version": selected["before_version"],
+                "after_version": selected["after_version"], "skipped_flagged": selected["skipped_flagged"], **result}
 
     def diff(self, before_id: int, after_id: int, limit=100, offset=0, kinds=None) -> dict:
         """Compare two clean imports of one dataset by key, with full counts and a page of field-level changes."""
         check_page(limit, offset)
         kinds = change_kinds(kinds)
+        before, after, old, new = self._snapshots(before_id, after_id)
+        result = compare(old, new, kinds, limit, offset)
+        return {"before_id": before_id, "after_id": after_id, "counts": result["counts"],
+                "schema": {"added": sorted(set(after["headers"]) - set(before["headers"])),
+                           "removed": sorted(set(before["headers"]) - set(after["headers"]))},
+                "kinds": kinds, "changes": result["changes"], "total_changes": result["total_changes"],
+                "limit": limit, "offset": offset}
+
+    def diff_changes(self, before_id: int, after_id: int, kinds=None) -> Iterator[dict]:
+        """Every change of the requested kinds between two clean imports, in key order, without pagination.
+
+        Inputs are checked before this returns. Changes are built one key at a time as the result is consumed.
+        """
+        kinds = change_kinds(kinds)
+        _, _, old, new = self._snapshots(before_id, after_id)
+        return iter_changes(old, new, kinds)
+
+    def _snapshots(self, before_id: int, after_id: int) -> tuple[dict, dict, dict, dict]:
+        """Two clean imports of one dataset and their records by key, or a Conflict saying why not."""
         with closing(self.connect()) as connection:
             before = self._import(connection, before_id)
             after = self._import(connection, after_id)
@@ -363,10 +390,4 @@ class Store:
                 return {row["entity_key"]: record_dict(row) for row in connection.execute(
                     "SELECT * FROM records WHERE import_id = ?", (identifier,)
                 )}
-            old, new = load(before_id), load(after_id)
-        result = compare(old, new, kinds, limit, offset)
-        return {"before_id": before_id, "after_id": after_id, "counts": result["counts"],
-                "schema": {"added": sorted(set(after["headers"]) - set(before["headers"])),
-                           "removed": sorted(set(before["headers"]) - set(after["headers"]))},
-                "kinds": kinds, "changes": result["changes"], "total_changes": result["total_changes"],
-                "limit": limit, "offset": offset}
+            return before, after, load(before_id), load(after_id)
