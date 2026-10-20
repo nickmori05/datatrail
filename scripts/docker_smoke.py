@@ -84,6 +84,11 @@ def main():
         until = request(base, f"/datasets/suppliers/changes?until={after['version']}")
         assert (until["before_id"], until["skipped_flagged"]) == (before["id"], []), until
         request(base, f"/datasets/suppliers/changes?until={messy['version']}", expected=409)
+        export = request(base, "/datasets/suppliers/changes?format=csv&kind=changed", raw=True).decode()
+        assert export == ("key,kind,field,before,after,before_record,after_record\r\n"
+                          "S002,changed,city,Boston,Chicago,2,2\r\n"), export
+        request(base, "/datasets/suppliers/changes?format=csv&limit=5", expected=422)
+        request(base, f"/diff?before={before['id']}&after={messy['id']}&format=csv", expected=409)
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
         history = request(base, "/datasets/suppliers/history?key=S002")
@@ -93,8 +98,8 @@ def main():
         request(base, "/datasets/missing/history?key=S002", expected=404)
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality and type checks, diffs, latest changes, provenance, key history and "
-              "CLI reads passed.", flush=True)
+        print("HTTP imports, retries, quality and type checks, diffs, CSV exports, latest changes, provenance, "
+              "key history and CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

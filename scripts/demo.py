@@ -1,5 +1,7 @@
 """Run the README workflow against a temporary database and print the results as JSON."""
 
+import csv
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -14,14 +16,14 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         database = str(Path(directory) / "demo.sqlite3")
 
-        def cli(*arguments, expected=0):
+        def cli(*arguments, expected=0, parse=json.loads):
             result = subprocess.run(
                 [sys.executable, "-m", "datatrail", "--database", database, *arguments],
                 cwd=ROOT, capture_output=True, text=True, timeout=30,
             )
             if result.returncode != expected:
                 raise RuntimeError(result.stderr or result.stdout)
-            return json.loads(result.stdout)
+            return parse(result.stdout)
 
         before = cli("import", "suppliers", "examples/suppliers-before.csv", "--key", "supplier_id")
         after = cli("import", "suppliers", "examples/suppliers-after.csv", "--key", "supplier_id")
@@ -32,12 +34,13 @@ def main():
         trail = cli("trace", "suppliers", "S002")
         history = cli("history", "suppliers", "S002")
         latest = cli("changes", "suppliers", "--kind", "changed")
+        export = cli("changes", "suppliers", "--format", "csv", parse=lambda text: list(csv.reader(io.StringIO(text))))
         invoices = cli("import", "invoices", "examples/invoices.csv", "--key", "invoice_id",
                        "--type", "amount:decimal", "--type", "due_date:date", expected=1)
         invalid = cli("records", str(invoices["id"]), "--issue", "invalid_value")
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
                           "supplier_trail": trail, "supplier_history": history, "latest_changes": latest,
-                          "invalid_values": invalid}, indent=2))
+                          "invalid_values": invalid, "changes_csv": export}, indent=2))
 
 
 if __name__ == "__main__":

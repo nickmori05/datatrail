@@ -212,3 +212,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
         self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
                          [(3, ["amount"]), (4, ["due_date"])])
+        self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",
+                                                    "after_record"], ["S002", "changed", "city", "Boston", "Chicago",
+                                                                      "2", "2"]])
