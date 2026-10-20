@@ -7,6 +7,7 @@ import sqlite3
 import sys
 
 from .errors import Conflict, InvalidInput, NotFound
+from .export import csv_chunks
 from .ingest import ISSUE_CODES, MAX_BYTES
 from .store import CHANGE_KINDS, Store, default_database
 
@@ -49,10 +50,29 @@ def parser():
     for command in (diff, changes):
         command.add_argument("--kind", action="append", choices=CHANGE_KINDS,
                              help="Only list this kind of change; repeatable")
+        command.add_argument("--format", choices=("json", "csv"), default="json",
+                             help="csv writes every listed change, one row per changed field, without counts")
     for command in (datasets, imports, records, trace, history, diff, changes):
-        command.add_argument("--limit", type=int, default=100)
-        command.add_argument("--offset", type=int, default=0)
+        # None means "not given", so a CSV export can reject explicit pagination.
+        command.add_argument("--limit", type=int, help="Results per page, 1–1000 (default 100)")
+        command.add_argument("--offset", type=int, help="Results to skip (default 0)")
     return root
+
+
+def export(store, args):
+    """Write every requested change as CSV to stdout, warning on stderr about skipped flagged versions."""
+    if args.limit is not None or args.offset is not None:
+        raise InvalidInput("CSV exports include every change; leave out --limit and --offset.")
+    if args.command == "diff":
+        changes = store.diff_changes(args.before, args.after, kinds=args.kind)
+    else:
+        selected = store.select_versions(args.dataset, since=args.since, until=args.until)
+        changes = store.diff_changes(selected["before_id"], selected["after_id"], kinds=args.kind)
+        if selected["skipped_flagged"]:
+            versions = ", ".join(str(item["version"]) for item in selected["skipped_flagged"])
+            print(f"Warning: comparing versions {selected['before_version']} and {selected['after_version']}; "
+                  f"skipped flagged versions {versions}.", file=sys.stderr)
+    sys.stdout.writelines(csv_chunks(changes))
 
 
 def main(argv=None):
@@ -61,6 +81,12 @@ def main(argv=None):
     try:
         store = Store(args.database)
         store.initialize()
+        if getattr(args, "format", "json") == "csv":
+            export(store, args)
+            return 0
+        if "limit" in args:
+            args.limit = 100 if args.limit is None else args.limit
+            args.offset = 0 if args.offset is None else args.offset
         code = 0
         if args.command == "import":
             with args.file.open("rb") as source:

@@ -1,9 +1,59 @@
+import csv
+import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from datatrail.errors import Conflict, InvalidInput, NotFound
+from datatrail.export import CSV_COLUMNS, change_rows, csv_chunks
 from datatrail.store import Store
+
+
+def parse(text):
+    return list(csv.reader(io.StringIO(text, newline="")))
+
+
+class CsvTests(unittest.TestCase):
+    changes = [
+        {"key": "A", "kind": "changed", "fields": {"note": {"before": 'say "hi", then\nleave', "after": ""}},
+         "before_record": 1, "after_record": 2},
+        {"key": "B", "kind": "added", "fields": {"id": {"before": None, "after": "B"},
+                                                 "note": {"before": None, "after": "=1+1"}},
+         "before_record": None, "after_record": 3},
+    ]
+
+    def test_rows_have_one_line_per_changed_field_and_blank_missing_values(self):
+        self.assertEqual(list(change_rows(self.changes)), [
+            ["A", "changed", "note", 'say "hi", then\nleave', "", 1, 2],
+            ["B", "added", "id", "", "B", "", 3],
+            ["B", "added", "note", "", "=1+1", "", 3]])
+
+    def test_csv_quotes_values_uses_crlf_and_round_trips(self):
+        text = "".join(csv_chunks(self.changes))
+        self.assertTrue(text.startswith("key,kind,field,before,after,before_record,after_record\r\n"))
+        self.assertIn('"say ""hi"", then\nleave"', text)
+        rows = parse(text)
+        self.assertEqual(rows[0], list(CSV_COLUMNS))
+        self.assertEqual(rows[1], ["A", "changed", "note", 'say "hi", then\nleave', "", "1", "2"])
+        self.assertEqual(rows[3][4], "=1+1")
+        self.assertEqual("".join(csv_chunks([])), "key,kind,field,before,after,before_record,after_record\r\n")
+
+    def test_chunks_are_bounded_and_consume_changes_lazily(self):
+        consumed = []
+        def changes():
+            for number in range(50):
+                consumed.append(number)
+                yield {"key": f"K{number}", "kind": "added", "fields": {"id": {"before": None, "after": "x" * 20}},
+                       "before_record": None, "after_record": number + 1}
+        with patch("datatrail.export.CHUNK_SIZE", 100):
+            chunks = csv_chunks(changes())
+            first = next(chunks)
+            self.assertLess(len(consumed), 50)
+            rest = list(chunks)
+        self.assertGreater(len(rest), 5)
+        self.assertTrue(all(len(chunk) < 200 for chunk in [first, *rest]))
+        self.assertEqual(len(parse(first + "".join(rest))), 51)
 
 
 class ChangeStreamTests(unittest.TestCase):
