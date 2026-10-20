@@ -177,6 +177,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(demo["issue_counts"], {"column_count": 1, "missing_key": 1, "duplicate_key": 2,
                                                 "invalid_value": 0})
         self.assertEqual([row["version"] for row in demo["supplier_trail"]], [3, 3, 2, 1])
+        history = demo["supplier_history"]
+        self.assertEqual([(event["version"], event["kind"]) for event in history["events"]],
+                         [(2, "changed"), (1, "added")])
+        self.assertEqual([item["version"] for item in history["skipped_flagged"]], [3])
         latest = demo["latest_changes"]
         self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])

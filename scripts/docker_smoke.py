@@ -86,10 +86,15 @@ def main():
         request(base, f"/datasets/suppliers/changes?until={messy['version']}", expected=409)
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
+        history = request(base, "/datasets/suppliers/history?key=S002")
+        assert [(event["version"], event["kind"]) for event in history["events"]] == [(2, "changed"), (1, "added")], \
+            history
+        assert [row["number"] for row in history["skipped_flagged"][0]["key_records"]] == [2, 3], history
+        request(base, "/datasets/missing/history?key=S002", expected=404)
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality and type checks, diffs, latest changes, provenance and CLI reads passed.",
-              flush=True)
+        print("HTTP imports, retries, quality and type checks, diffs, latest changes, provenance, key history and "
+              "CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()
