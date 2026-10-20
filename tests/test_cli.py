@@ -149,6 +149,24 @@ class CliTests(unittest.TestCase):
             self.assertEqual((code, output), (2, ""))
             self.assertIn(message, errors)
 
+    def test_history_shows_a_keys_changes_and_flagged_rows(self):
+        for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
+            self.import_example(fixture)
+        code, output, errors = self.call("history", "suppliers", "S002")
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        summary = [(event["version"], event["kind"]) for event in result["events"]]
+        self.assertEqual(summary, [(2, "changed"), (1, "added")])
+        self.assertEqual(result["events"][0]["fields"], {"city": {"before": "Boston", "after": "Chicago"}})
+        self.assertEqual([row["number"] for row in result["skipped_flagged"][0]["key_records"]], [2, 3])
+        code, output, _ = self.call("history", "suppliers", "S003", "--limit", "1")
+        self.assertEqual([event["kind"] for event in json.loads(output)["events"]], ["removed"])
+        for args, message in ((("missing", "S002"), "does not exist"), (("suppliers", ""), "Key must be"),
+                              (("suppliers", "S002", "--limit", "0"), "Limit")):
+            code, output, errors = self.call("history", *args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],
                                 cwd=ROOT, capture_output=True, text=True, timeout=30)

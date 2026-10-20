@@ -36,6 +36,9 @@ def parser():
     trace = commands.add_parser("trace", help="Trace an exact normalized key through snapshots")
     trace.add_argument("dataset")
     trace.add_argument("key")
+    history = commands.add_parser("history", help="Show how one key's values changed across clean snapshots")
+    history.add_argument("dataset")
+    history.add_argument("key")
     diff = commands.add_parser("diff", help="Compare two clean snapshots of the same dataset")
     diff.add_argument("before", type=int)
     diff.add_argument("after", type=int)
@@ -46,7 +49,7 @@ def parser():
     for command in (diff, changes):
         command.add_argument("--kind", action="append", choices=CHANGE_KINDS,
                              help="Only list this kind of change; repeatable")
-    for command in (datasets, imports, records, trace, diff, changes):
+    for command in (datasets, imports, records, trace, history, diff, changes):
         command.add_argument("--limit", type=int, default=100)
         command.add_argument("--offset", type=int, default=0)
     return root
@@ -75,6 +78,8 @@ def main(argv=None):
                                    offset=args.offset)
         elif args.command == "trace":
             result = store.trace(args.dataset, args.key, args.limit, args.offset)
+        elif args.command == "history":
+            result = store.history(args.dataset, args.key, args.limit, args.offset)
         elif args.command == "changes":
             result = store.latest_changes(args.dataset, args.limit, args.offset, kinds=args.kind, since=args.since,
                                           until=args.until)

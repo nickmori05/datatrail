@@ -127,6 +127,11 @@ def create_app(database: Path | None = None) -> FastAPI:
               offset: int = Query(default=0, ge=0)):
         return store.trace(dataset, key, limit, offset)
 
+    @app.get("/datasets/{dataset}/history")
+    def history(dataset: str, key: str = Query(min_length=1), limit: int = Query(default=100, ge=1, le=1000),
+                offset: int = Query(default=0, ge=0)):
+        return store.history(dataset, key, limit, offset)
+
     @app.get("/datasets/{dataset}/changes")
     def changes(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
                 kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),

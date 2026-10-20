@@ -106,6 +106,21 @@ class ApiTests(unittest.TestCase):
                                ({"since": 2, "until": 2}, 400), ({"until": 0}, 422), ({"until": "last"}, 422)):
             self.assertEqual(self.client.get("/datasets/suppliers/changes", params=params).status_code, status, params)
 
+    def test_history_endpoint_lists_a_keys_changes(self):
+        self.assertEqual(self.client.get("/datasets/suppliers/history", params={"key": "A"}).status_code, 404)
+        self.upload(b"id,name\nA,Ada\n")
+        self.upload(b"id,name\nA,Ada\nA,Other\n")
+        self.upload(b"id,name\nA,Ada Lovelace\n")
+        response = self.client.get("/datasets/suppliers/history", params={"key": "A"})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        summary = [(event["version"], event["kind"]) for event in result["events"]]
+        self.assertEqual(summary, [(3, "changed"), (1, "added")])
+        self.assertEqual(result["latest"]["data"], {"id": "A", "name": "Ada Lovelace"})
+        self.assertEqual([item["version"] for item in result["skipped_flagged"]], [2])
+        for params in ({}, {"key": ""}, {"key": "A", "limit": 0}, {"key": "A", "offset": -1}):
+            self.assertEqual(self.client.get("/datasets/suppliers/history", params=params).status_code, 422, params)
+
     def test_flagged_import_is_saved_but_cannot_be_compared(self):
         clean = self.upload().json()
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n")

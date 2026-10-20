@@ -38,3 +38,32 @@ def compare(old: dict, new: dict, kinds: list[str], limit: int, offset: int) -> 
                             "after_record": right["number"] if right else None})
         total += 1
     return {"counts": counts, "changes": changes, "total_changes": total}
+
+
+def key_history(snapshots: list[dict], records: dict) -> list[dict]:
+    """One key's added, changed and removed events across clean snapshots, oldest first.
+
+    `snapshots` are a dataset's clean imports in version order. `records` maps an import ID to the key's
+    record in that import; a clean import has at most one. Versions where the key's values did not change,
+    or where it was absent before and after, produce no event.
+    """
+    events = []
+    previous, previous_version = None, None
+    for snapshot in snapshots:
+        record = records.get(snapshot["id"])
+        if record is not None or previous is not None:
+            kind = change_kind(previous, record)
+            if kind != "unchanged":
+                events.append({
+                    "version": snapshot["version"], "import_id": snapshot["id"], "kind": kind,
+                    "previous_version": previous_version,
+                    "fields": changed_fields(previous and previous["data"], record and record["data"]),
+                    "before_record": previous["number"] if previous else None,
+                    "before_line": previous["source_line"] if previous else None,
+                    "after_record": record["number"] if record else None,
+                    "after_line": record["source_line"] if record else None,
+                    "source_name": snapshot["source_name"], "sha256": snapshot["sha256"],
+                    "imported_at": snapshot["imported_at"],
+                })
+        previous, previous_version = record, snapshot["version"]
+    return events
