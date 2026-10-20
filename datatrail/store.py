@@ -1,4 +1,4 @@
-"""SQLite storage for datasets, imports and records, plus snapshot comparison."""
+"""SQLite storage for datasets, imports and records, and the queries that compare them."""
 
 from contextlib import closing
 from datetime import UTC, datetime
@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sqlite3
 
+from .compare import compare
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import parse_column_types
@@ -325,28 +326,9 @@ class Store:
                     "SELECT * FROM records WHERE import_id = ?", (identifier,)
                 )}
             old, new = load(before_id), load(after_id)
-        counts = {"added": 0, "removed": 0, "changed": 0, "unchanged": 0}
-        changes = []
-        total = 0
-        for key in sorted(old.keys() | new.keys()):
-            left, right = old.get(key), new.get(key)
-            kind = "added" if left is None else "removed" if right is None else (
-                "unchanged" if left["data"] == right["data"] else "changed"
-            )
-            counts[kind] += 1
-            if kind not in kinds:
-                continue
-            if offset <= total < offset + limit:
-                old_data = left["data"] if left else {}
-                new_data = right["data"] if right else {}
-                fields = {name: {"before": old_data.get(name), "after": new_data.get(name)}
-                          for name in sorted(old_data.keys() | new_data.keys())
-                          if old_data.get(name) != new_data.get(name)}
-                changes.append({"key": key, "kind": kind, "fields": fields,
-                                "before_record": left["number"] if left else None,
-                                "after_record": right["number"] if right else None})
-            total += 1
-        return {"before_id": before_id, "after_id": after_id, "counts": counts,
+        result = compare(old, new, kinds, limit, offset)
+        return {"before_id": before_id, "after_id": after_id, "counts": result["counts"],
                 "schema": {"added": sorted(set(after["headers"]) - set(before["headers"])),
                            "removed": sorted(set(before["headers"]) - set(after["headers"]))},
-                "kinds": kinds, "changes": changes, "total_changes": total, "limit": limit, "offset": offset}
+                "kinds": kinds, "changes": result["changes"], "total_changes": result["total_changes"],
+                "limit": limit, "offset": offset}

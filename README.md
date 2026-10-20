@@ -216,7 +216,8 @@ before pagination, and an empty page means there are no more results.
 | --- | --- |
 | `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
 | `datatrail/rules.py` | Column type specs and the values each type accepts |
-| `datatrail/store.py` | SQLite schema setup, imports, queries and snapshot comparison |
+| `datatrail/store.py` | SQLite schema setup, imports and queries |
+| `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
