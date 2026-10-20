@@ -221,7 +221,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(result["skipped_flagged"], [{"id": dirty["id"], "version": 4, "rejected_count": 2}])
         self.assertEqual(result["counts"], {"added": 0, "removed": 0, "changed": 1, "unchanged": 1})
         self.assertEqual(result, {**self.store.diff(before["id"], after["id"]), "dataset": "suppliers",
-                                  "before_version": 2, "after_version": 3, "skipped_flagged": result["skipped_flagged"]})
+                                  "before_version": 2, "after_version": 3,
+                                  "skipped_flagged": result["skipped_flagged"]})
         self.assertEqual(self.store.latest_changes("suppliers", kinds=["added"])["changes"], [])
 
     def test_latest_changes_needs_two_clean_snapshots(self):

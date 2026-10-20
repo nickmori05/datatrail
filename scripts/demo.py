@@ -1,3 +1,5 @@
+"""Run the README workflow against a temporary database and print the results as JSON."""
+
 import json
 from pathlib import Path
 import subprocess

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datatrail"
+dynamic = ["version"]
+description = "Investigate what changed between CSV exports and trace each record back to its source."
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["datatrail"]
+
+[tool.setuptools.dynamic]
+version = { attr = "datatrail.__version__" }
+
+[tool.setuptools.package-data]
+datatrail = ["schema.sql"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# FastAPI declares query parameters with Query(...) defaults.
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+lines-after-imports = 2

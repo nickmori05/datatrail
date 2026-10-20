@@ -1,7 +1,10 @@
+"""SQLite storage for datasets, imports and records, plus snapshot comparison."""
+
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -12,6 +15,7 @@ from .rules import parse_column_types
 
 
 CHANGE_KINDS = ("added", "removed", "changed")
+DEFAULT_DATABASE = ".local/datatrail.sqlite3"
 IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, d.column_types_json, i.version, i.source_name,
     i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
 # Columns added after the first release. Older databases gain them, with their defaults, on startup.
@@ -19,7 +23,13 @@ ADDED_COLUMNS = (("datasets", "column_types_json", "TEXT NOT NULL DEFAULT '{}'")
                  ("records", "invalid_columns_json", "TEXT NOT NULL DEFAULT '[]'"))
 
 
-def page_args(limit: int, offset: int):
+def default_database() -> Path:
+    """The database path from DATATRAIL_DB, or the local default relative to the working directory."""
+    return Path(os.environ.get("DATATRAIL_DB", DEFAULT_DATABASE))
+
+
+def check_page(limit: int, offset: int):
+    """Reject pagination values outside the documented bounds."""
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise InvalidInput("Limit must be between 1 and 1000.")
     if type(offset) is not int or offset < 0:
@@ -27,6 +37,7 @@ def page_args(limit: int, offset: int):
 
 
 def change_kinds(kinds) -> list[str]:
+    """Validate requested change kinds; none means all of them. Returns them in canonical order."""
     if not kinds:
         return list(CHANGE_KINDS)
     if any(kind not in CHANGE_KINDS for kind in kinds):
@@ -35,12 +46,14 @@ def change_kinds(kinds) -> list[str]:
 
 
 def issue_codes(codes) -> list[str]:
+    """Validate requested issue codes and return them in canonical order."""
     if any(code not in ISSUE_CODES for code in codes):
         raise InvalidInput(f"Issue codes must be one of {', '.join(ISSUE_CODES)}.")
     return [code for code in ISSUE_CODES if code in codes]
 
 
 def import_dict(row) -> dict:
+    """Turn an import row into its JSON shape."""
     result = dict(row)
     result["headers"] = json.loads(result.pop("headers_json"))
     result["column_types"] = json.loads(result.pop("column_types_json"))
@@ -48,6 +61,7 @@ def import_dict(row) -> dict:
 
 
 def record_dict(row) -> dict:
+    """Turn a record row into its JSON shape, decoding the stored JSON columns."""
     result = dict(row)
     for name in ("raw", "data", "issues", "invalid_columns"):
         value = result.pop(f"{name}_json")
@@ -57,16 +71,20 @@ def record_dict(row) -> dict:
 
 
 class Store:
+    """All reads and writes for one SQLite database file. Each call opens its own connection."""
+
     def __init__(self, database: Path):
         self.database = Path(database)
 
     def connect(self):
+        """Open a connection with row access by column name and foreign keys enforced."""
         connection = sqlite3.connect(self.database, timeout=5)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def initialize(self):
+        """Create the database and tables if needed, and add columns missing from older databases."""
         self.database.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.connect()) as connection:
             connection.executescript(Path(__file__).with_name("schema.sql").read_text())
@@ -77,6 +95,7 @@ class Store:
             connection.commit()
 
     def _import(self, connection, identifier: int) -> dict:
+        """Import details with per-code issue counts, or NotFound."""
         row = connection.execute(
             f"SELECT {IMPORT_FIELDS} FROM imports i JOIN datasets d ON d.id = i.dataset_id WHERE i.id = ?",
             (identifier,),
@@ -93,8 +112,14 @@ class Store:
         return result
 
     def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None) -> dict:
+        """Save a CSV file as the dataset's next version, or return the existing import for identical bytes.
+
+        The dataset is created on first use with this key column and column types; later imports must match
+        them. The result includes `replayed`, which is true for an exact retry.
+        """
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
-            raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, starting with a letter or digit.")
+            raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, "
+                               "starting with a letter or digit.")
         if not source_name or len(source_name) > 255 or any(ord(char) < 32 for char in source_name):
             raise InvalidInput("Source name must be 1–255 characters without control characters.")
         # Omitted column types mean "use the dataset's saved types"; a new dataset then has none.
@@ -134,7 +159,7 @@ class Store:
                 """INSERT INTO imports (dataset_id, version, source_name, sha256, imported_at,
                    headers_json, row_count, accepted_count, rejected_count, source)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (dataset_id, version, source_name, digest, datetime.now(timezone.utc).isoformat(),
+                (dataset_id, version, source_name, digest, datetime.now(UTC).isoformat(),
                  json.dumps(headers), len(rows), accepted, len(rows) - accepted, content),
             ).lastrowid
             connection.executemany(
@@ -147,7 +172,8 @@ class Store:
             return {**self._import(connection, identifier), "replayed": False}
 
     def datasets(self, limit=100, offset=0) -> list[dict]:
-        page_args(limit, offset)
+        """List datasets by name with their import count and latest version."""
+        check_page(limit, offset)
         with closing(self.connect()) as connection:
             return [{**dict(row), "column_types": json.loads(row["column_types"])} for row in connection.execute(
                 """SELECT d.name, d.key_column, d.column_types_json AS column_types, COUNT(i.id) AS import_count,
@@ -157,21 +183,28 @@ class Store:
             )]
 
     def imports(self, dataset: str, limit=100, offset=0) -> list[dict]:
-        page_args(limit, offset)
+        """List a dataset's imports, newest version first."""
+        check_page(limit, offset)
         with closing(self.connect()) as connection:
-            if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
-                raise NotFound(f"Dataset '{dataset}' does not exist.")
+            self._dataset(connection, dataset)
             return [import_dict(row) for row in connection.execute(
                 f"""SELECT {IMPORT_FIELDS} FROM imports i JOIN datasets d ON d.id = i.dataset_id
                     WHERE d.name = ? ORDER BY i.version DESC LIMIT ? OFFSET ?""", (dataset, limit, offset)
             )]
 
+    def _dataset(self, connection, dataset: str):
+        """Raise NotFound unless the dataset exists."""
+        if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
+            raise NotFound(f"Dataset '{dataset}' does not exist.")
+
     def get_import(self, identifier: int) -> dict:
+        """One import's details and quality counts."""
         with closing(self.connect()) as connection:
             return self._import(connection, identifier)
 
     def records(self, identifier: int, *, flagged=False, issues=None, limit=100, offset=0) -> list[dict]:
-        page_args(limit, offset)
+        """An import's records in source order, optionally only flagged ones or those with given issue codes."""
+        check_page(limit, offset)
         issues = issue_codes(issues or [])
         with closing(self.connect()) as connection:
             self._import(connection, identifier)
@@ -188,6 +221,7 @@ class Store:
             return [record_dict(row) for row in connection.execute(query, (*params, limit, offset))]
 
     def source(self, identifier: int) -> bytes:
+        """The exact bytes that were imported."""
         with closing(self.connect()) as connection:
             row = connection.execute("SELECT source FROM imports WHERE id = ?", (identifier,)).fetchone()
             if row is None:
@@ -195,10 +229,10 @@ class Store:
             return bytes(row["source"])
 
     def trace(self, dataset: str, key: str, limit=100, offset=0) -> list[dict]:
-        page_args(limit, offset)
+        """Every record with this exact normalized key across the dataset's versions, newest first."""
+        check_page(limit, offset)
         with closing(self.connect()) as connection:
-            if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
-                raise NotFound(f"Dataset '{dataset}' does not exist.")
+            self._dataset(connection, dataset)
             return [record_dict(row) for row in connection.execute(
                 """SELECT r.*, i.version, i.source_name, i.sha256, i.imported_at FROM records r
                    JOIN imports i ON i.id = r.import_id JOIN datasets d ON d.id = i.dataset_id
@@ -207,6 +241,7 @@ class Store:
             )]
 
     def _version(self, connection, dataset: str, version: int, option: str, role: str) -> dict:
+        """A clean import chosen by version; `option` and `role` only shape error messages."""
         if type(version) is not int or version < 1:
             raise InvalidInput(f"{option} must be a positive dataset version.")
         row = connection.execute(
@@ -220,6 +255,7 @@ class Store:
         return row
 
     def _clean(self, connection, dataset: str, above=0, below=None, count=1) -> list:
+        """Up to `count` clean imports between two versions (exclusive), newest first."""
         query = """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
                    WHERE d.name = ? AND i.rejected_count = 0 AND i.version > ?"""
         params = [dataset, above]
@@ -229,11 +265,14 @@ class Store:
         return connection.execute(query + " ORDER BY i.version DESC LIMIT ?", (*params, count)).fetchall()
 
     def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None) -> dict:
-        page_args(limit, offset)
+        """Diff two clean snapshots chosen by version: the two newest by default, or `since`/`until`.
+
+        Adds the compared versions and `skipped_flagged`, the flagged imports inside the compared range.
+        """
+        check_page(limit, offset)
         kinds = change_kinds(kinds)
         with closing(self.connect()) as connection:
-            if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
-                raise NotFound(f"Dataset '{dataset}' does not exist.")
+            self._dataset(connection, dataset)
             if since is not None:
                 baseline = self._version(connection, dataset, since, "Since", "a baseline")
             if until is not None:
@@ -271,7 +310,8 @@ class Store:
                 "skipped_flagged": skipped, **result}
 
     def diff(self, before_id: int, after_id: int, limit=100, offset=0, kinds=None) -> dict:
-        page_args(limit, offset)
+        """Compare two clean imports of one dataset by key, with full counts and a page of field-level changes."""
+        check_page(limit, offset)
         kinds = change_kinds(kinds)
         with closing(self.connect()) as connection:
             before = self._import(connection, before_id)

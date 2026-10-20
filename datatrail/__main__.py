@@ -1,18 +1,20 @@
+"""Command-line interface: python -m datatrail COMMAND."""
+
 import argparse
 import json
-import os
 from pathlib import Path
 import sqlite3
 import sys
 
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, MAX_BYTES
-from .store import CHANGE_KINDS, Store
+from .store import CHANGE_KINDS, Store, default_database
 
 
 def parser():
+    """Build the argument parser for every command."""
     root = argparse.ArgumentParser(description="Import CSV snapshots and investigate record changes.")
-    root.add_argument("--database", type=Path, default=Path(os.environ.get("DATATRAIL_DB", ".local/datatrail.sqlite3")))
+    root.add_argument("--database", type=Path, default=default_database())
     commands = root.add_subparsers(dest="command", required=True)
     ingest = commands.add_parser("import", help="Save a CSV snapshot and its quality report")
     ingest.add_argument("dataset")
@@ -42,7 +44,8 @@ def parser():
     changes.add_argument("--since", type=int, help="Compare from this clean version instead of the second newest")
     changes.add_argument("--until", type=int, help="Compare up to this clean version instead of the newest")
     for command in (diff, changes):
-        command.add_argument("--kind", action="append", choices=CHANGE_KINDS, help="Only list this kind of change; repeatable")
+        command.add_argument("--kind", action="append", choices=CHANGE_KINDS,
+                             help="Only list this kind of change; repeatable")
     for command in (datasets, imports, records, trace, diff, changes):
         command.add_argument("--limit", type=int, default=100)
         command.add_argument("--offset", type=int, default=0)
@@ -50,6 +53,7 @@ def parser():
 
 
 def main(argv=None):
+    """Run one command and print its JSON result. Returns the process exit code."""
     args = parser().parse_args(argv)
     try:
         store = Store(args.database)
