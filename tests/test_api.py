@@ -155,6 +155,26 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, status, (path, params))
             self.assertNotIn("text/csv", response.headers["content-type"])
 
+    def test_spreadsheet_csv_escapes_formulas_and_adds_a_byte_order_mark(self):
+        before = self.upload(b"id,note\nA,ok\nB,-5\n").json()
+        after = self.upload(b"id,note\nA,@SUM(1)\nB,-6\n").json()
+        expected = ("\ufeffkey,kind,field,before,after,before_record,after_record\r\n"
+                    "A,changed,note,ok,'@SUM(1),1,1\r\nB,changed,note,-5,-6,2,2\r\n").encode()
+        paths = (("/diff", {"before": before["id"], "after": after["id"]}), ("/datasets/suppliers/changes", {}))
+        for path, params in paths:
+            response = self.client.get(path, params={"format": "csv", "spreadsheet": "true", **params})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.headers["content-type"], "text/csv; charset=utf-8")
+            self.assertEqual(response.content, expected)
+            plain = self.client.get(path, params={"format": "csv", "spreadsheet": "false", **params})
+            self.assertEqual(plain.content, expected.removeprefix("\ufeff".encode()).replace(b"'@", b"@"))
+            for extra in ({"spreadsheet": "true"}, {"format": "json", "spreadsheet": "true"},
+                          {"format": "csv", "spreadsheet": "maybe"}):
+                rejected = self.client.get(path, params={**params, **extra})
+                self.assertEqual(rejected.status_code, 422, extra)
+        operation = self.client.get("/openapi.json").json()["paths"]["/diff"]["get"]
+        self.assertIn("spreadsheet", {parameter["name"] for parameter in operation["parameters"]})
+
     def test_flagged_import_is_saved_but_cannot_be_compared(self):
         clean = self.upload().json()
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n")

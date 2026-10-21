@@ -206,6 +206,23 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.stdout.decode(), "key,kind,field,before,after,before_record,after_record\r\n"
                                                  "A,changed,name,Ada,Zoë,1,1\r\n")
 
+    def test_spreadsheet_option_escapes_formulas_and_adds_a_byte_order_mark(self):
+        for name, content in (("before.csv", "id,note\nA,ok\nB,-5\n"), ("after.csv", "id,note\nA,=1+1\nB,-6\n")):
+            source = self.database.with_name(name)
+            source.write_text(content, encoding="utf-8")
+            self.call("import", "notes", str(source), "--key", "id")
+        for args in (("diff", "1", "2"), ("changes", "notes")):
+            code, output, errors = self.call(*args, "--format", "csv", "--spreadsheet")
+            self.assertEqual((code, errors), (0, ""))
+            self.assertEqual(output, "\ufeffkey,kind,field,before,after,before_record,after_record\r\n"
+                                     "A,changed,note,ok,'=1+1,1,1\r\nB,changed,note,-5,-6,2,2\r\n")
+        code, output, _ = self.call("diff", "1", "2", "--format", "csv")
+        self.assertEqual((code, output.splitlines()[1]), (0, "A,changed,note,ok,=1+1,1,1"))
+        for args in (("diff", "1", "2", "--spreadsheet"), ("changes", "notes", "--format", "json", "--spreadsheet")):
+            code, output, errors = self.call(*args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn("--spreadsheet only applies to --format csv", errors)
+
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],
                                 cwd=ROOT, capture_output=True, text=True, timeout=30)
