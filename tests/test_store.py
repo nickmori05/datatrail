@@ -98,6 +98,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(store.import_csv("suppliers", "id", content, "again.csv")["replayed"], True)
         new = store.import_csv("suppliers", "id", b"id,name\nA,Ada Lovelace\n", "new.csv")
         self.assertEqual(store.latest_changes("suppliers")["counts"]["changed"], 1)
+        self.assertEqual([event["version"] for event in store.history("suppliers", "A")["events"]], [2, 1])
         self.assertEqual(new["column_types"], {})
         with self.assertRaisesRegex(Conflict, "column types"):
             store.import_csv("suppliers", "id", b"id,name\nA,1\n", "typed.csv", ["name:integer"])

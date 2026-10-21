@@ -1,4 +1,4 @@
-"""SQLite storage for datasets, imports and records, plus snapshot comparison."""
+"""SQLite storage for datasets, imports and records, and the queries that compare them."""
 
 from contextlib import closing
 from datetime import UTC, datetime
@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sqlite3
 
+from .compare import compare, key_history
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import parse_column_types
@@ -240,6 +241,44 @@ class Store:
                    LIMIT ? OFFSET ?""", (dataset, key, limit, offset)
             )]
 
+    def history(self, dataset: str, key: str, limit=100, offset=0) -> dict:
+        """How one exact normalized key's values changed across the dataset's clean versions, newest first.
+
+        Flagged imports are not compared but are listed in `skipped_flagged` with the key's rows there, since
+        a value that changed in a flagged import only shows up in the next clean one.
+        """
+        check_page(limit, offset)
+        if not isinstance(key, str) or not key:
+            raise InvalidInput("Key must be a nonempty string.")
+        with closing(self.connect()) as connection:
+            self._dataset(connection, dataset)
+            snapshots = [dict(row) for row in connection.execute(
+                """SELECT i.id, i.version, i.source_name, i.sha256, i.imported_at, i.rejected_count
+                   FROM imports i JOIN datasets d ON d.id = i.dataset_id WHERE d.name = ? ORDER BY i.version""",
+                (dataset,)
+            )]
+            rows = [record_dict(row) for row in connection.execute(
+                """SELECT r.* FROM records r JOIN imports i ON i.id = r.import_id JOIN datasets d ON d.id = i.dataset_id
+                   WHERE d.name = ? AND r.entity_key = ? ORDER BY r.import_id, r.number""", (dataset, key)
+            )]
+        clean = [snapshot for snapshot in snapshots if not snapshot["rejected_count"]]
+        records = {row["import_id"]: row for row in rows if not row["issues"]}
+        events = key_history(clean, records)[::-1]
+        latest = None
+        if clean and clean[-1]["id"] in records:
+            record = records[clean[-1]["id"]]
+            latest = {"version": clean[-1]["version"], "import_id": clean[-1]["id"], "record": record["number"],
+                      "data": record["data"]}
+        # The key's rows in each flagged import, which may be why its latest change is missing.
+        skipped = [{"id": snapshot["id"], "version": snapshot["version"], "rejected_count": snapshot["rejected_count"],
+                    "key_records": [{name: row[name] for name in ("number", "source_line", "issues")}
+                                    for row in rows if row["import_id"] == snapshot["id"]]}
+                   for snapshot in reversed(snapshots) if snapshot["rejected_count"]]
+        return {"dataset": dataset, "key": key, "clean_versions": len(clean),
+                "present_in": sum(snapshot["id"] in records for snapshot in clean), "latest": latest,
+                "skipped_flagged": skipped, "events": events[offset:offset + limit], "total_events": len(events),
+                "limit": limit, "offset": offset}
+
     def _version(self, connection, dataset: str, version: int, option: str, role: str) -> dict:
         """A clean import chosen by version; `option` and `role` only shape error messages."""
         if type(version) is not int or version < 1:
@@ -325,28 +364,9 @@ class Store:
                     "SELECT * FROM records WHERE import_id = ?", (identifier,)
                 )}
             old, new = load(before_id), load(after_id)
-        counts = {"added": 0, "removed": 0, "changed": 0, "unchanged": 0}
-        changes = []
-        total = 0
-        for key in sorted(old.keys() | new.keys()):
-            left, right = old.get(key), new.get(key)
-            kind = "added" if left is None else "removed" if right is None else (
-                "unchanged" if left["data"] == right["data"] else "changed"
-            )
-            counts[kind] += 1
-            if kind not in kinds:
-                continue
-            if offset <= total < offset + limit:
-                old_data = left["data"] if left else {}
-                new_data = right["data"] if right else {}
-                fields = {name: {"before": old_data.get(name), "after": new_data.get(name)}
-                          for name in sorted(old_data.keys() | new_data.keys())
-                          if old_data.get(name) != new_data.get(name)}
-                changes.append({"key": key, "kind": kind, "fields": fields,
-                                "before_record": left["number"] if left else None,
-                                "after_record": right["number"] if right else None})
-            total += 1
-        return {"before_id": before_id, "after_id": after_id, "counts": counts,
+        result = compare(old, new, kinds, limit, offset)
+        return {"before_id": before_id, "after_id": after_id, "counts": result["counts"],
                 "schema": {"added": sorted(set(after["headers"]) - set(before["headers"])),
                            "removed": sorted(set(before["headers"]) - set(after["headers"]))},
-                "kinds": kinds, "changes": changes, "total_changes": total, "limit": limit, "offset": offset}
+                "kinds": kinds, "changes": result["changes"], "total_changes": result["total_changes"],
+                "limit": limit, "offset": offset}

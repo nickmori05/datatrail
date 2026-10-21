@@ -9,8 +9,9 @@ missing or malformed keys, wrong column counts or values that fail declared
 column types are kept and labelled instead of being dropped, and snapshots
 with flagged rows are never used for comparisons. Clean snapshots can be
 compared field by field, and any key can be traced back through every version
-to its source file and line. It runs as a command-line tool (standard library
-only) or a FastAPI service, both backed by one SQLite file.
+to its source file and line, or read as a history of when its values changed.
+It runs as a command-line tool (standard library only) or a FastAPI service,
+both backed by one SQLite file.
 
 ## Quick start
 
@@ -43,6 +44,7 @@ python3 -m datatrail changes suppliers
 python3 -m datatrail changes suppliers --since 1
 python3 -m datatrail changes suppliers --until 2
 python3 -m datatrail trace suppliers S002
+python3 -m datatrail history suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
 python3 -m datatrail records 3 --issue duplicate_key
@@ -91,6 +93,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
 | GET | `/imports/{id}/source` | Download the exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized key |
+| GET | `/datasets/{name}/history?key=value` | Show when one key was added, changed or removed |
 | GET | `/diff?before=1&after=2&kind=changed` | Compare two clean snapshots |
 | GET | `/datasets/{name}/changes?kind=added` | Compare the two newest clean snapshots |
 | GET | `/datasets/{name}/changes?since=1` | Compare a baseline version with the newest clean snapshot |
@@ -192,6 +195,17 @@ upgraded in place on startup; their datasets have no types.
   with any of those codes.
 - `trace DATASET KEY` finds an exact normalized key in every version, newest
   first, including flagged duplicates.
+- `history DATASET KEY` turns the same exact key into a timeline of the clean
+  versions where it was `added`, `changed` or `removed`, newest first. Each event
+  has the changed fields with before and after values, `previous_version` (the
+  clean version it was compared with), the record numbers and source lines on
+  both sides, and the import's source name, SHA-256 and timestamp. Versions
+  where nothing changed are left out; `present_in` counts the clean versions
+  that contain the key, and `latest` is its record in the newest clean snapshot,
+  or `null` if it is not there. Flagged imports are not compared. They are
+  listed in `skipped_flagged` with the key's rows and issue codes in each, so a
+  change hidden by a broken export is visible. An unknown key has an empty
+  history rather than a `404`.
 - `diff BEFORE AFTER` compares two clean imports of the same dataset by key. It
   reports added, removed, changed and unchanged counts, field-level before and
   after values with the original record numbers, and added or removed columns.
@@ -216,7 +230,8 @@ before pagination, and an empty page means there are no more results.
 | --- | --- |
 | `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
 | `datatrail/rules.py` | Column type specs and the values each type accepts |
-| `datatrail/store.py` | SQLite schema setup, imports, queries and snapshot comparison |
+| `datatrail/store.py` | SQLite schema setup, imports and queries |
+| `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
@@ -241,14 +256,14 @@ python3 -m venv .venv
 
 Tests use temporary databases and synthetic fixtures. They cover parsing edge
 cases, duplicate handling, source preservation, atomic rollback, concurrent
-retries and version allocation, schema upgrades, pagination, CLI and API error
-paths, and the demo.
+retries and version allocation, schema upgrades, key history, pagination, CLI
+and API error paths, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality and type checks, diffs, version
-lookups, source downloads, CLI and API sharing one database, and persistence
-across container recreation, then removes everything it created.
+lookups, key history, source downloads, CLI and API sharing one database, and
+persistence across container recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.
@@ -261,7 +276,10 @@ check.
   is no background queue, retention policy or migration framework beyond the
   additive upgrade on startup.
 - Keys are matched exactly. There is no fuzzy matching, cross-source entity
-  resolution or automatic type inference.
+  resolution or automatic type inference. A renamed key appears in `history`
+  as one key removed and another added.
+- `history` only sees clean versions, so a value that changed and changed back
+  inside flagged imports leaves no event; check `skipped_flagged`.
 - Column types cover integers, decimals and ISO dates only; there are no
   required columns, enums, ranges or locale-specific number formats. A dataset's
   key column and types cannot change; use a new dataset name.
