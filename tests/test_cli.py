@@ -2,6 +2,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import csv
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -192,6 +193,18 @@ class CliTests(unittest.TestCase):
             self.assertIn(message, errors)
         code, output, _ = self.call("diff", "1", "2", "--limit", "1")
         self.assertEqual((code, len(json.loads(output)["changes"])), (0, 1))
+
+    def test_csv_export_is_utf8_with_crlf_whatever_the_console_encoding(self):
+        for name, content in (("before.csv", "id,name\nA,Ada\n"), ("after.csv", "id,name\nA,Zoë\n")):
+            source = self.database.with_name(name)
+            source.write_text(content, encoding="utf-8")
+            self.call("import", "people", str(source), "--key", "id")
+        result = subprocess.run([sys.executable, "-m", "datatrail", "--database", str(self.database), "diff", "1",
+                                 "2", "--format", "csv"], cwd=ROOT, capture_output=True, timeout=30,
+                                env={**os.environ, "PYTHONIOENCODING": "ascii"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.decode(), "key,kind,field,before,after,before_record,after_record\r\n"
+                                                 "A,changed,name,Ada,Zoë,1,1\r\n")
 
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],

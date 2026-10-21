@@ -72,7 +72,15 @@ def export(store, args):
             versions = ", ".join(str(item["version"]) for item in selected["skipped_flagged"])
             print(f"Warning: comparing versions {selected['before_version']} and {selected['after_version']}; "
                   f"skipped flagged versions {versions}.", file=sys.stderr)
-    sys.stdout.writelines(csv_chunks(changes))
+    chunks = csv_chunks(changes)
+    # Write UTF-8 bytes, so the console's encoding can neither reject a value nor rewrite the CRLF line endings.
+    output = getattr(sys.stdout, "buffer", None)
+    if output is None:
+        sys.stdout.writelines(chunks)
+    else:
+        sys.stdout.flush()
+        output.writelines(chunk.encode() for chunk in chunks)
+        output.flush()
 
 
 def main(argv=None):
