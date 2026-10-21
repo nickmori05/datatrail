@@ -43,6 +43,7 @@ python3 -m datatrail diff 1 2
 python3 -m datatrail changes suppliers
 python3 -m datatrail changes suppliers --since 1
 python3 -m datatrail changes suppliers --until 2
+python3 -m datatrail changes suppliers --format csv > changes.csv
 python3 -m datatrail trace suppliers S002
 python3 -m datatrail history suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
@@ -98,6 +99,8 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/datasets/{name}/changes?kind=added` | Compare the two newest clean snapshots |
 | GET | `/datasets/{name}/changes?since=1` | Compare a baseline version with the newest clean snapshot |
 | GET | `/datasets/{name}/changes?until=2` | Compare an end version with the newest clean snapshot before it |
+| GET | `/diff?before=1&after=2&format=csv` | Download every change between two clean snapshots as CSV |
+| GET | `/datasets/{name}/changes?format=csv` | Download every change between chosen versions as CSV |
 | GET | `/health/live` | Check that the API is responding |
 | GET | `/health/ready` | Check that the import table is readable |
 
@@ -112,7 +115,7 @@ and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 | `409` | Changed key column or column types, or a comparison involving flagged snapshots |
 | `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
 | `415` | Body is not `Content-Type: text/csv` |
-| `422` | Invalid query parameters |
+| `422` | Invalid query parameters, including `limit` or `offset` on a CSV export |
 | `503` | Storage unavailable |
 
 The API never fetches remote URLs or opens server file paths supplied by
@@ -224,6 +227,38 @@ upgraded in place on startup; their datasets have no types.
 Lists accept `--limit` (1–1,000, default 100) and `--offset`. Filters apply
 before pagination, and an empty page means there are no more results.
 
+## CSV exports
+
+`diff` and `changes` accept `--format csv` (`format=csv` in the API) to write
+every listed change as CSV instead of one page of JSON, for a spreadsheet or
+another tool. There is one row per changed field:
+
+| Column | Value |
+| --- | --- |
+| `key` | The normalized key |
+| `kind` | `added`, `removed` or `changed` |
+| `field` | The column name |
+| `before`, `after` | The trimmed values on each side |
+| `before_record`, `after_record` | Record numbers in each import |
+
+An added key has a row for each of its fields with an empty `before`, and a
+removed key the reverse. Rows follow key order, then field name. `--kind`
+filters rows as it does for JSON. Exports are never paginated, so `--limit` or
+`--offset` with `--format csv` is an error (`422` in the API).
+
+The CSV has a header row, UTF-8 text without a byte order mark, standard
+quoting and CRLF line endings. It has no counts or schema summary; use JSON for
+those. A missing field and an empty value are both written as an empty cell;
+JSON keeps them apart (`null` versus `""`). For `changes`, the CLI prints the
+compared versions and any skipped flagged versions to stderr, and the API sends
+them as `X-Datatrail-Before-Version`, `X-Datatrail-After-Version` and
+`X-Datatrail-Skipped-Flagged` (comma-separated, empty when none). API downloads
+are streamed as attachments named `diff-1-2.csv` or `suppliers-v1-v2.csv`.
+
+Values are written exactly as imported. A spreadsheet may treat a cell that
+starts with `=`, `+`, `-` or `@` as a formula, so open exports from untrusted
+sources as text.
+
 ## Design
 
 | Module | Responsibility |
@@ -232,6 +267,7 @@ before pagination, and an empty page means there are no more results.
 | `datatrail/rules.py` | Column type specs and the values each type accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
+| `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
@@ -262,7 +298,7 @@ and API error paths, and the demo.
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality and type checks, diffs, version
-lookups, key history, source downloads, CLI and API sharing one database, and
+lookups, key history, CSV exports, source downloads, CLI and API sharing one database, and
 persistence across container recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
@@ -272,9 +308,12 @@ check.
 
 - Built for one trusted local workspace: no authentication, users or
   per-user isolation. Keep the API bound to localhost.
-- Snapshots are bounded (5 MiB, 10,000 records) and compared in memory. There
-  is no background queue, retention policy or migration framework beyond the
-  additive upgrade on startup.
+- Snapshots are bounded (5 MiB, 10,000 records) and compared in memory. CSV
+  exports stream their output but still load both snapshots first. There is no
+  background queue, retention policy or migration framework beyond the additive
+  upgrade on startup.
+- CSV exports cannot tell a missing field from an empty one, and they do not
+  escape values that spreadsheets read as formulas.
 - Keys are matched exactly. There is no fuzzy matching, cross-source entity
   resolution or automatic type inference. A renamed key appears in `history`
   as one key removed and another added.

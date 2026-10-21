@@ -1,4 +1,5 @@
 from contextlib import redirect_stderr, redirect_stdout
+import csv
 import io
 import json
 from pathlib import Path
@@ -167,6 +168,31 @@ class CliTests(unittest.TestCase):
             self.assertEqual((code, output), (2, ""))
             self.assertIn(message, errors)
 
+    def test_diff_and_changes_export_csv(self):
+        for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
+            self.import_example(fixture)
+        code, output, errors = self.call("diff", "1", "2", "--format", "csv", "--kind", "changed")
+        self.assertEqual((code, errors), (0, ""))
+        rows = list(csv.reader(io.StringIO(output, newline="")))
+        self.assertEqual(rows, [["key", "kind", "field", "before", "after", "before_record", "after_record"],
+                                ["S002", "changed", "city", "Boston", "Chicago", "2", "2"]])
+        code, output, errors = self.call("changes", "suppliers", "--format", "csv")
+        self.assertEqual(code, 0, errors)
+        rows = list(csv.reader(io.StringIO(output, newline="")))
+        self.assertEqual(sorted({(row[0], row[1]) for row in rows[1:]}),
+                         [("S002", "changed"), ("S003", "removed"), ("S004", "added")])
+        self.assertEqual(len(rows), 10)
+        self.assertIn("skipped flagged versions 3", errors)
+        for args, message in ((("diff", "1", "2", "--format", "csv", "--limit", "5"), "leave out --limit"),
+                              (("changes", "suppliers", "--format", "csv", "--offset", "0"), "leave out --limit"),
+                              (("diff", "1", "3", "--format", "csv"), "flagged"),
+                              (("changes", "suppliers", "--format", "csv", "--until", "1"), "older than version 1")):
+            code, output, errors = self.call(*args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+        code, output, _ = self.call("diff", "1", "2", "--limit", "1")
+        self.assertEqual((code, len(json.loads(output)["changes"])), (0, 1))
+
     def test_demo_runs_the_documented_workflow_in_an_isolated_database(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts" / "demo.py")],
                                 cwd=ROOT, capture_output=True, text=True, timeout=30)
@@ -186,3 +212,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
         self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
                          [(3, ["amount"]), (4, ["due_date"])])
+        self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",
+                                                    "after_record"], ["S002", "changed", "city", "Boston", "Chicago",
+                                                                      "2", "2"]])

@@ -1,3 +1,5 @@
+import csv
+import io
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -120,6 +122,38 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([item["version"] for item in result["skipped_flagged"]], [2])
         for params in ({}, {"key": ""}, {"key": "A", "limit": 0}, {"key": "A", "offset": -1}):
             self.assertEqual(self.client.get("/datasets/suppliers/history", params=params).status_code, 422, params)
+
+    def test_diff_and_changes_download_as_csv(self):
+        before = self.upload(b"id,name\nA,Ada\nB,Bob\n").json()
+        self.upload(b"id,name\nA,Ada\nA,Other\n")
+        after = self.upload(b"id,name\nA,Ada Lovelace\nC,Cam\n").json()
+        response = self.client.get("/diff", params={"before": before["id"], "after": after["id"], "format": "csv",
+                                                    "kind": ["changed", "added"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "text/csv; charset=utf-8")
+        self.assertEqual(response.headers["content-disposition"],
+                         f'attachment; filename="diff-{before["id"]}-{after["id"]}.csv"')
+        rows = list(csv.reader(io.StringIO(response.text, newline="")))
+        self.assertEqual(rows[1:], [["A", "changed", "name", "Ada", "Ada Lovelace", "1", "1"],
+                                    ["C", "added", "id", "", "C", "", "2"], ["C", "added", "name", "", "Cam", "", "2"]])
+        changes = self.client.get("/datasets/suppliers/changes", params={"format": "csv", "kind": "removed"})
+        self.assertEqual(changes.status_code, 200, changes.text)
+        self.assertEqual([row[0] for row in csv.reader(io.StringIO(changes.text, newline=""))], ["key", "B", "B"])
+        self.assertEqual((changes.headers["x-datatrail-before-version"], changes.headers["x-datatrail-after-version"],
+                          changes.headers["x-datatrail-skipped-flagged"]), ("1", "3", "2"))
+        self.assertIn('filename="suppliers-v1-v3.csv"', changes.headers["content-disposition"])
+        self.assertEqual(self.client.get("/diff", params={"before": before["id"], "after": after["id"]})
+                         .headers["content-type"], "application/json")
+        for path, params, status in (("/diff", {"before": before["id"], "after": 2}, 409),
+                                     ("/diff", {"before": before["id"], "after": 99}, 404),
+                                     ("/diff", {"before": before["id"], "after": after["id"], "limit": 10}, 422),
+                                     ("/datasets/suppliers/changes", {"offset": 0}, 422),
+                                     ("/datasets/suppliers/changes", {"until": 2}, 409),
+                                     ("/datasets/missing/changes", {}, 404),
+                                     ("/datasets/suppliers/changes", {"format": "xlsx"}, 422)):
+            response = self.client.get(path, params={"format": "csv", **params})
+            self.assertEqual(response.status_code, status, (path, params))
+            self.assertNotIn("text/csv", response.headers["content-type"])
 
     def test_flagged_import_is_saved_but_cannot_be_compared(self):
         clean = self.upload().json()
