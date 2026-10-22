@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager, closing
 import hashlib
 from pathlib import Path
 import sqlite3
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -20,6 +20,8 @@ from .store import CHANGE_KINDS, Store, default_database
 TOO_LARGE = f"CSV files must be at most {MAX_BYTES // (1024 * 1024)} MiB."
 CSV_RESPONSE = {200: {"content": {"text/csv": {"schema": {"type": "string"}}},
                       "description": "JSON by default; with format=csv, one row per changed field"}}
+Spreadsheet = Annotated[bool, Query(description="With format=csv, add a byte order mark and escape values that "
+                                                 "spreadsheets would run as formulas")]
 
 
 async def read_csv(request: Request) -> bytes:
@@ -46,15 +48,22 @@ async def read_csv(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-def check_export(request: Request):
-    """CSV exports are never paginated, so explicit limit or offset parameters are a mistake."""
-    if {"limit", "offset"} & request.query_params.keys():
+def check_export(request: Request, output: str, spreadsheet: bool):
+    """Reject options that do not apply to the chosen format.
+
+    CSV exports are never paginated, so explicit limit or offset parameters are a mistake, and only CSV
+    exports can be prepared for spreadsheets.
+    """
+    if output == "json":
+        if spreadsheet:
+            raise HTTPException(422, "spreadsheet only applies to format=csv.")
+    elif {"limit", "offset"} & request.query_params.keys():
         raise HTTPException(422, "CSV exports include every change; leave out limit and offset.")
 
 
-def csv_response(changes, filename: str, headers=None) -> StreamingResponse:
+def csv_response(changes, filename: str, spreadsheet: bool, headers=None) -> StreamingResponse:
     """Stream changes as a CSV attachment. Errors must be raised before this, since the status is sent first."""
-    return StreamingResponse(csv_chunks(changes), media_type="text/csv; charset=utf-8", headers={
+    return StreamingResponse(csv_chunks(changes, spreadsheet), media_type="text/csv; charset=utf-8", headers={
         **(headers or {}), "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Content-Type-Options": "nosniff",
     })
@@ -153,26 +162,28 @@ def create_app(database: Path | None = None) -> FastAPI:
     def changes(dataset: str, request: Request, limit: int = Query(default=100, ge=1, le=1000),
                 offset: int = Query(default=0, ge=0), kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),
                 since: int | None = Query(default=None, ge=1), until: int | None = Query(default=None, ge=1),
-                output: Literal["json", "csv"] = Query(default="json", alias="format")):
+                output: Literal["json", "csv"] = Query(default="json", alias="format"),
+                spreadsheet: Spreadsheet = False):
+        check_export(request, output, spreadsheet)
         if output == "json":
             return store.latest_changes(dataset, limit, offset, kinds=kind, since=since, until=until)
-        check_export(request)
         selected = store.select_versions(dataset, since=since, until=until)
         before, after = selected["before_version"], selected["after_version"]
         skipped = ",".join(str(item["version"]) for item in selected["skipped_flagged"])
         headers = {"X-Datatrail-Before-Version": str(before), "X-Datatrail-After-Version": str(after),
                    "X-Datatrail-Skipped-Flagged": skipped}
         return csv_response(store.diff_changes(selected["before_id"], selected["after_id"], kinds=kind),
-                            f"{dataset}-v{before}-v{after}.csv", headers)
+                            f"{dataset}-v{before}-v{after}.csv", spreadsheet, headers)
 
     @app.get("/diff", responses=CSV_RESPONSE)
     def diff(before: int, after: int, request: Request, limit: int = Query(default=100, ge=1, le=1000),
              offset: int = Query(default=0, ge=0), kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),
-             output: Literal["json", "csv"] = Query(default="json", alias="format")):
+             output: Literal["json", "csv"] = Query(default="json", alias="format"), spreadsheet: Spreadsheet = False):
+        check_export(request, output, spreadsheet)
         if output == "json":
             return store.diff(before, after, limit, offset, kinds=kind)
-        check_export(request)
-        return csv_response(store.diff_changes(before, after, kinds=kind), f"diff-{before}-{after}.csv")
+        return csv_response(store.diff_changes(before, after, kinds=kind), f"diff-{before}-{after}.csv",
+                            spreadsheet)
 
     return app
 

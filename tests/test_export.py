@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from datatrail.errors import Conflict, InvalidInput, NotFound
-from datatrail.export import CSV_COLUMNS, change_rows, csv_chunks
+from datatrail.export import CSV_COLUMNS, change_rows, csv_chunks, escape_formula
 from datatrail.store import Store
 
 
@@ -39,6 +39,29 @@ class CsvTests(unittest.TestCase):
         self.assertEqual(rows[3][4], "=1+1")
         self.assertEqual("".join(csv_chunks([])), "key,kind,field,before,after,before_record,after_record\r\n")
 
+    def test_escape_formula_prefixes_formula_text_but_not_numbers(self):
+        for value in ("=1+1", '=HYPERLINK("http://example.invalid","x")', "+1 555 0100", "-2+3", "@SUM(A1)",
+                      "-", "+", "\tx", "\rx", "\nx", "-1e3", "+1,000"):
+            with self.subTest(value=value):
+                self.assertEqual(escape_formula(value), "'" + value)
+        for value in ("-5", "+003", "-.5", "12.", "-9.50", "", "plain", "a=b", "'=1+1", "2026-01-31", 7, None):
+            with self.subTest(value=value):
+                self.assertEqual(escape_formula(value), value)
+
+    def test_spreadsheet_csv_has_one_byte_order_mark_and_escaped_text_cells(self):
+        changes = [{"key": "=K", "kind": "changed", "fields": {"@note": {"before": "-5", "after": "=1+1"},
+                                                              "total": {"before": "+1", "after": "-SUM(A1)"}},
+                    "before_record": 1, "after_record": 2}]
+        text = "".join(csv_chunks(changes, spreadsheet=True))
+        self.assertTrue(text.startswith("\ufeffkey,kind,field,"))
+        self.assertEqual(text.count("\ufeff"), 1)
+        self.assertEqual(parse(text.removeprefix("\ufeff"))[1:], [
+            ["'=K", "changed", "'@note", "-5", "'=1+1", "1", "2"],
+            ["'=K", "changed", "total", "+1", "'-SUM(A1)", "1", "2"]])
+        self.assertEqual("".join(csv_chunks([], spreadsheet=True)),
+                         "\ufeffkey,kind,field,before,after,before_record,after_record\r\n")
+        self.assertEqual(parse("".join(csv_chunks(changes)))[1][4], "=1+1")
+
     def test_chunks_are_bounded_and_consume_changes_lazily(self):
         consumed = []
         def changes():
@@ -54,6 +77,10 @@ class CsvTests(unittest.TestCase):
         self.assertGreater(len(rest), 5)
         self.assertTrue(all(len(chunk) < 200 for chunk in [first, *rest]))
         self.assertEqual(len(parse(first + "".join(rest))), 51)
+        with patch("datatrail.export.CHUNK_SIZE", 100):
+            chunks = list(csv_chunks(changes(), spreadsheet=True))
+        self.assertGreater(len(chunks), 5)
+        self.assertEqual(["\ufeff" in chunk for chunk in chunks], [True] + [False] * (len(chunks) - 1))
 
 
 class ChangeStreamTests(unittest.TestCase):

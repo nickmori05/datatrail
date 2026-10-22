@@ -44,6 +44,7 @@ python3 -m datatrail changes suppliers
 python3 -m datatrail changes suppliers --since 1
 python3 -m datatrail changes suppliers --until 2
 python3 -m datatrail changes suppliers --format csv > changes.csv
+python3 -m datatrail changes suppliers --format csv --spreadsheet > changes-for-excel.csv
 python3 -m datatrail trace suppliers S002
 python3 -m datatrail history suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
@@ -101,6 +102,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/datasets/{name}/changes?until=2` | Compare an end version with the newest clean snapshot before it |
 | GET | `/diff?before=1&after=2&format=csv` | Download every change between two clean snapshots as CSV |
 | GET | `/datasets/{name}/changes?format=csv` | Download every change between chosen versions as CSV |
+| GET | `/datasets/{name}/changes?format=csv&spreadsheet=true` | Download the same CSV prepared for a spreadsheet |
 | GET | `/health/live` | Check that the API is responding |
 | GET | `/health/ready` | Check that the import table is readable |
 
@@ -115,7 +117,7 @@ and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 | `409` | Changed key column or column types, or a comparison involving flagged snapshots |
 | `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
 | `415` | Body is not `Content-Type: text/csv` |
-| `422` | Invalid query parameters, including `limit` or `offset` on a CSV export |
+| `422` | Invalid query parameters, including `limit` or `offset` on a CSV export, or `spreadsheet` on JSON |
 | `503` | Storage unavailable |
 
 The API never fetches remote URLs or opens server file paths supplied by
@@ -247,7 +249,8 @@ filters rows as it does for JSON. Exports are never paginated, so `--limit` or
 `--offset` with `--format csv` is an error (`422` in the API).
 
 The CSV has a header row, UTF-8 text without a byte order mark, standard
-quoting and CRLF line endings. It has no counts or schema summary; use JSON for
+quoting and CRLF line endings. The CLI writes it as UTF-8 bytes even when the
+terminal uses another encoding. It has no counts or schema summary; use JSON for
 those. A missing field and an empty value are both written as an empty cell;
 JSON keeps them apart (`null` versus `""`). For `changes`, the CLI prints the
 compared versions and any skipped flagged versions to stderr, and the API sends
@@ -255,9 +258,30 @@ them as `X-Datatrail-Before-Version`, `X-Datatrail-After-Version` and
 `X-Datatrail-Skipped-Flagged` (comma-separated, empty when none). API downloads
 are streamed as attachments named `diff-1-2.csv` or `suppliers-v1-v2.csv`.
 
-Values are written exactly as imported. A spreadsheet may treat a cell that
-starts with `=`, `+`, `-` or `@` as a formula, so open exports from untrusted
-sources as text.
+Values are written exactly as imported. That suits other tools, but not
+opening the file directly in a spreadsheet: Excel, LibreOffice and Google Sheets
+evaluate a cell that starts with `=`, `+`, `-` or `@` as a formula, which a
+hostile source file can use to fetch URLs or show misleading results.
+
+### Spreadsheet exports
+
+Add `--spreadsheet` (`spreadsheet=true` in the API) to a CSV export that a
+person will open in a spreadsheet program:
+
+- Text in the `key`, `field`, `before` and `after` columns that starts with `=`,
+  `+`, `-`, `@`, a tab or a line break gets a leading apostrophe, so
+  `=HYPERLINK(...)` arrives as the text `'=HYPERLINK(...)` instead of a formula.
+- Plain numbers such as `-5`, `+003` or `-.5` are left alone: a number cannot
+  call a function or fetch anything, and escaping it would turn every negative
+  amount into text. `-1e3` and `+1,000` are not plain numbers and are escaped.
+- The file starts with a UTF-8 byte order mark, so Excel shows accented and
+  non-Latin text correctly instead of guessing a legacy encoding.
+
+Everything else (columns, row order, `--kind`, headers, filenames and errors)
+matches a plain CSV export. `--spreadsheet` without `--format csv` is an error
+(`422` in the API). The escaping changes values, so use plain CSV for anything
+that reads the file programmatically. An escaped value cannot be told apart
+from an imported value that already started with an apostrophe.
 
 ## Design
 
@@ -267,7 +291,7 @@ sources as text.
 | `datatrail/rules.py` | Column type specs and the values each type accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
-| `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks |
+| `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
@@ -293,13 +317,14 @@ python3 -m venv .venv
 Tests use temporary databases and synthetic fixtures. They cover parsing edge
 cases, duplicate handling, source preservation, atomic rollback, concurrent
 retries and version allocation, schema upgrades, key history, pagination, CLI
-and API error paths, and the demo.
+and API error paths, formula escaping, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality and type checks, diffs, version
-lookups, key history, CSV exports, source downloads, CLI and API sharing one database, and
-persistence across container recreation, then removes everything it created.
+lookups, key history, plain and spreadsheet CSV exports, source downloads, CLI
+and API sharing one database, and persistence across container recreation, then
+removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.
@@ -312,8 +337,9 @@ check.
   exports stream their output but still load both snapshots first. There is no
   background queue, retention policy or migration framework beyond the additive
   upgrade on startup.
-- CSV exports cannot tell a missing field from an empty one, and they do not
-  escape values that spreadsheets read as formulas.
+- CSV exports cannot tell a missing field from an empty one. Formula escaping
+  is opt-in and covers the leading characters spreadsheets commonly treat as
+  formulas; other programs may have rules of their own.
 - Keys are matched exactly. There is no fuzzy matching, cross-source entity
   resolution or automatic type inference. A renamed key appears in `history`
   as one key removed and another added.

@@ -88,6 +88,14 @@ def main():
         assert export == ("key,kind,field,before,after,before_record,after_record\r\n"
                           "S002,changed,city,Boston,Chicago,2,2\r\n"), export
         request(base, "/datasets/suppliers/changes?format=csv&limit=5", expected=422)
+        notes = "/datasets/notes/imports?key=id"
+        request(base, notes, b"id,note\nN1,ok\nN2,-5\n", expected=201)
+        request(base, notes, 'id,note\nN1,=HYPERLINK("http://example.invalid")\nN2,Zo\u00eb\n'.encode(), expected=201)
+        sheet = request(base, "/datasets/notes/changes?format=csv&spreadsheet=true", raw=True)
+        assert sheet == ("\ufeffkey,kind,field,before,after,before_record,after_record\r\n"
+                         "N1,changed,note,ok,\"'=HYPERLINK(\"\"http://example.invalid\"\")\",1,1\r\n"
+                         "N2,changed,note,-5,Zo\u00eb,2,2\r\n").encode(), sheet
+        request(base, "/datasets/notes/changes?spreadsheet=true", expected=422)
         request(base, f"/diff?before={before['id']}&after={messy['id']}&format=csv", expected=409)
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
@@ -97,9 +105,10 @@ def main():
         assert [row["number"] for row in history["skipped_flagged"][0]["key_records"]] == [2, 3], history
         request(base, "/datasets/missing/history?key=S002", expected=404)
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
-        assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality and type checks, diffs, CSV exports, latest changes, provenance, "
-              "key history and CLI reads passed.", flush=True)
+        assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "notes": 2,
+                                                                             "suppliers": 3}, datasets
+        print("HTTP imports, retries, quality and type checks, diffs, plain and spreadsheet CSV exports, latest "
+              "changes, provenance, key history and CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

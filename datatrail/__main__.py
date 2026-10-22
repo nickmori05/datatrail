@@ -52,6 +52,9 @@ def parser():
                              help="Only list this kind of change; repeatable")
         command.add_argument("--format", choices=("json", "csv"), default="json",
                              help="csv writes every listed change, one row per changed field, without counts")
+        command.add_argument("--spreadsheet", action="store_true",
+                             help="With --format csv, add a byte order mark and escape values that spreadsheets "
+                                  "would run as formulas")
     for command in (datasets, imports, records, trace, history, diff, changes):
         # None means "not given", so a CSV export can reject explicit pagination.
         command.add_argument("--limit", type=int, help="Results per page, 1–1000 (default 100)")
@@ -72,7 +75,15 @@ def export(store, args):
             versions = ", ".join(str(item["version"]) for item in selected["skipped_flagged"])
             print(f"Warning: comparing versions {selected['before_version']} and {selected['after_version']}; "
                   f"skipped flagged versions {versions}.", file=sys.stderr)
-    sys.stdout.writelines(csv_chunks(changes))
+    chunks = csv_chunks(changes, spreadsheet=args.spreadsheet)
+    # Write UTF-8 bytes, so the console's encoding can neither reject a value nor rewrite the CRLF line endings.
+    output = getattr(sys.stdout, "buffer", None)
+    if output is None:
+        sys.stdout.writelines(chunks)
+    else:
+        sys.stdout.flush()
+        output.writelines(chunk.encode() for chunk in chunks)
+        output.flush()
 
 
 def main(argv=None):
@@ -84,6 +95,8 @@ def main(argv=None):
         if getattr(args, "format", "json") == "csv":
             export(store, args)
             return 0
+        if getattr(args, "spreadsheet", False):
+            raise InvalidInput("--spreadsheet only applies to --format csv.")
         if "limit" in args:
             args.limit = 100 if args.limit is None else args.limit
             args.offset = 0 if args.offset is None else args.offset
