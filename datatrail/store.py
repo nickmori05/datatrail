@@ -14,6 +14,7 @@ from .compare import compare, iter_changes, key_history
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import parse_column_types, parse_rules, saved_rules
+from .summary import dataset_summary
 from .versions import select_versions
 
 
@@ -213,6 +214,12 @@ class Store:
                 f"""SELECT {IMPORT_FIELDS} FROM imports i JOIN datasets d ON d.id = i.dataset_id
                     WHERE d.name = ? ORDER BY i.version DESC LIMIT ? OFFSET ?""", (dataset, limit, offset)
             )]
+
+    def summary(self, dataset: str, limit=100, offset=0) -> dict:
+        """A dataset's settings, version counts and a page of per-version quality and change counts, newest first."""
+        check_page(limit, offset)
+        with closing(self.connect()) as connection:
+            return dataset_summary(connection, dataset, limit, offset)
 
     def _dataset(self, connection, dataset: str):
         """Raise NotFound unless the dataset exists."""
