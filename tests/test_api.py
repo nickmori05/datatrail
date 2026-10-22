@@ -78,6 +78,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([change["key"] for change in result["changes"]], ["C"])
         self.assertEqual(result["counts"]["removed"], 1)
 
+    def test_summary_endpoint_lists_versions_newest_first(self):
+        self.assertEqual(self.client.get("/datasets/suppliers/summary").status_code, 404)
+        self.upload(b"id,name\nA,Ada\nB,Bob\n")
+        self.upload(b"id,name\nA,Ada\nA,Other\n")
+        self.upload(b"id,name\nA,Ada Lovelace\nC,Cam\n")
+        response = self.client.get("/datasets/suppliers/summary", params={"limit": 2})
+        self.assertEqual(response.status_code, 200, response.text)
+        summary = response.json()
+        self.assertEqual([(item["version"], item["clean"]) for item in summary["versions"]], [(3, True), (2, False)])
+        self.assertEqual(summary["versions"][0]["changes"], {"compared_with": 1, "added": 1, "removed": 1,
+                                                             "changed": 1, "unchanged": 0})
+        self.assertEqual(summary["versions"][1]["issue_counts"]["duplicate_key"], 2)
+        self.assertEqual(self.client.get("/datasets/suppliers/summary", params={"limit": 0}).status_code, 422)
+
     def test_latest_changes_since_selects_baseline_version(self):
         self.upload(b"id,name\nA,Ada\n")
         self.upload(b"id,name\nA,Ada\nB,Bob\n")

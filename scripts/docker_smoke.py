@@ -115,11 +115,18 @@ def main():
             history
         assert [row["number"] for row in history["skipped_flagged"][0]["key_records"]] == [2, 3], history
         request(base, "/datasets/missing/history?key=S002", expected=404)
+        summary = request(base, "/datasets/suppliers/summary")
+        assert [(item["version"], item["clean"]) for item in summary["versions"]] == [(3, False), (2, True),
+                                                                                      (1, True)], summary
+        assert summary["versions"][1]["changes"] == {"compared_with": 1, "added": 1, "removed": 1, "changed": 1,
+                                                     "unchanged": 1}, summary
+        assert summary["versions"][0]["issue_counts"]["duplicate_key"] == 2, summary
+        request(base, "/datasets/missing/summary", expected=404)
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
             "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
         print("HTTP imports, retries, quality, type and value rule checks, diffs, plain and spreadsheet CSV exports, "
-              "latest changes, provenance, key history and CLI reads passed.", flush=True)
+              "latest changes, provenance, key history, dataset summaries and CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

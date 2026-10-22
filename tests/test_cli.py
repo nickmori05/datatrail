@@ -117,6 +117,24 @@ class CliTests(unittest.TestCase):
             self.assertEqual((code, output), (2, ""))
             self.assertIn(message, errors)
 
+    def test_summary_lists_each_versions_quality_and_changes(self):
+        for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
+            self.import_example(fixture)
+        code, output, errors = self.call("summary", "suppliers", "--limit", "2")
+        self.assertEqual(code, 0, errors)
+        summary = json.loads(output)
+        self.assertEqual((summary["import_count"], summary["flagged_versions"], summary["latest_clean_version"]),
+                         (3, 1, 2))
+        self.assertEqual([(item["version"], item["clean"], item["rejected_count"]) for item in summary["versions"]],
+                         [(3, False, 4), (2, True, 0)])
+        self.assertEqual(summary["versions"][1]["changes"], {"compared_with": 1, "added": 1, "removed": 1,
+                                                             "changed": 1, "unchanged": 1})
+        for args, message in ((("summary", "missing"), "does not exist"), (("summary", "suppliers", "--limit", "0"),
+                                                                           "Limit")):
+            code, output, errors = self.call(*args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_diff_kind_option_limits_listed_changes(self):
         ids = []
         for fixture in ("suppliers-before.csv", "suppliers-after.csv"):
@@ -261,6 +279,10 @@ class CliTests(unittest.TestCase):
         latest = demo["latest_changes"]
         self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
+        summary = demo["supplier_summary"]
+        self.assertEqual([(item["version"], item["clean"]) for item in summary["versions"]],
+                         [(3, False), (2, True), (1, True)])
+        self.assertEqual(summary["versions"][1]["changes"]["changed"], 1)
         self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
                          [(3, ["amount"]), (4, ["due_date"])])
         self.assertEqual([(row["number"], row["failed_rules"]) for row in demo["rule_failures"]], [

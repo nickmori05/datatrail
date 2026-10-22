@@ -10,7 +10,8 @@ that fail declared column types, allowed values or patterns are kept and
 labelled instead of being dropped, and snapshots with flagged rows are never
 used for comparisons. Clean snapshots can be compared field by field, and any
 key can be traced back through every version to its source file and line, or
-read as a history of when its values changed.
+read as a history of when its values changed. A dataset summary shows, version
+by version, how many rows were flagged and why, and how many keys changed.
 It runs as a command-line tool (standard library only) or a FastAPI service,
 both backed by one SQLite file.
 
@@ -52,6 +53,7 @@ python3 -m datatrail history suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
 python3 -m datatrail records 3 --issue duplicate_key
+python3 -m datatrail summary suppliers
 python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
   --type amount:decimal --type due_date:date
 python3 -m datatrail records 4 --issue invalid_value
@@ -97,6 +99,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | POST | `/datasets/{name}/imports?key=column&required=email&allow=region:east` | Upload with value rules |
 | GET | `/datasets` | List datasets |
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
+| GET | `/datasets/{name}/summary` | Quality and change counts for each version, newest first |
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect flagged rows |
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
@@ -233,6 +236,25 @@ failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
 
 ## Investigating changes
 
+- `summary DATASET` shows a dataset's settings and how it developed, one entry
+  per version, newest first. The top level has the key column, `column_types`,
+  `rules`, `import_count`, `clean_versions`, `flagged_versions`,
+  `latest_version` and `latest_clean_version` (`null` when every version is
+  flagged). Each version has its import ID, source name, SHA-256, timestamp and
+  record counts, plus:
+
+  | Field | Value |
+  | --- | --- |
+  | `clean` | Whether the version can be compared |
+  | `issue_counts` | Rows carrying each issue code, as in `show` |
+  | `invalid_columns` | Rows failing a type or value rule in each column, for example `{"email": 2}` |
+  | `schema` | Columns `added` and `removed` since `previous_version`, flagged or not; `null` for version 1 |
+  | `changes` | `added`, `removed`, `changed` and `unchanged` key counts against `compared_with`, the clean version before it; `null` for flagged versions and the first clean one |
+
+  `changes` counts the same way as `diff`, so a version that only reorders
+  columns has no changed keys. Flagged versions are skipped, as they are by
+  `changes`. It accepts `--limit` and `--offset`; a version on one page is still
+  compared with an older clean version on another.
 - `show ID` prints one import's source name, SHA-256, timestamp, columns, column
   types, record counts and `issue_counts`: how many rows carry each issue code,
   with zeros for codes that did not occur. It never prints the file contents.
@@ -335,6 +357,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/rules.py` | Column types and value rules, and the cells each one accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
+| `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
 | `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
 | `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
@@ -362,14 +385,15 @@ python3 -m venv .venv
 Tests use temporary databases and synthetic fixtures. They cover parsing edge
 cases, duplicate handling, value rules, source preservation, atomic rollback,
 concurrent retries and version allocation, schema upgrades, key history,
-pagination, CLI and API error paths, formula escaping, and the demo.
+dataset summaries (including randomized checks that their change counts match
+`diff`), pagination, CLI and API error paths, formula escaping, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality, type and value rule checks, diffs,
-version lookups, key history, plain and spreadsheet CSV exports, source
-downloads, CLI and API sharing one database, and persistence across container
-recreation, then removes everything it created.
+version lookups, key history, dataset summaries, plain and spreadsheet CSV
+exports, source downloads, CLI and API sharing one database, and persistence
+across container recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.
@@ -398,3 +422,8 @@ check.
   nested repetition, such as `(a+)+$`, can take very long on some values and
   holds up that import. Only use patterns you trust.
 - Versions reflect import order, not dates inside the files.
+- `summary` recomputes every count on each request. Change counts run in SQLite
+  without loading snapshots into Python, at roughly 15 ms per version for
+  10,000-record snapshots, and up to about 0.15 s when the column order changes.
+  A full page of 100 large versions can therefore take several seconds. It
+  counts changes but does not list them; use `changes --until VERSION` for that.

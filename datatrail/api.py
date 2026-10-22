@@ -137,6 +137,10 @@ def create_app(database: Path | None = None) -> FastAPI:
     def imports(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
         return store.imports(dataset, limit, offset)
 
+    @app.get("/datasets/{dataset}/summary")
+    def summary(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
+        return store.summary(dataset, limit, offset)
+
     @app.get("/imports/{identifier}")
     def get_import(identifier: int):
         return store.get_import(identifier)
