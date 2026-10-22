@@ -182,7 +182,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(dirty.json()["rejected_count"], 2)
         details = self.client.get(f"/imports/{dirty.json()['id']}").json()
         self.assertEqual(details["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 2,
-                                                  "invalid_value": 0})
+                                                  "invalid_value": 0, "missing_value": 0})
         rows = self.client.get(f"/imports/{dirty.json()['id']}/records",
                                params={"flagged": True, "limit": 1, "offset": 1}).json()
         self.assertEqual(rows[0]["number"], 3)
@@ -202,6 +202,25 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.upload(b"id,price,due\nA,1,\n", dataset="orders", type="price:integer").status_code, 409)
         self.assertEqual(self.upload(b"id,price\nA,1\n", dataset="fresh", type="price:money").status_code, 400)
         self.assertEqual(self.client.get("/datasets").json()[0]["column_types"], {"due": "date", "price": "decimal"})
+
+    def test_upload_rule_parameters_flag_missing_and_unexpected_values(self):
+        content = b"id,email,region\nA,a@x,east\nB,,west\nC,c@x,north\nD,d,east\n"
+        rules = {"required": "email", "allow": ["region:east", "region:west"], "pattern": "email:[^@]+@[^@]+"}
+        response = self.upload(content, dataset="contacts", **rules)
+        self.assertEqual(response.status_code, 201, response.text)
+        result = response.json()
+        self.assertEqual(result["rules"]["allowed"], {"region": ["east", "west"]})
+        self.assertEqual((result["issue_counts"]["missing_value"], result["issue_counts"]["invalid_value"]), (1, 2))
+        rows = self.client.get(f"/imports/{result['id']}/records", params={"issue": "missing_value"}).json()
+        self.assertEqual([(row["number"], row["failed_rules"]) for row in rows], [(2, {"email": ["required"]})])
+        self.assertEqual(self.upload(b"id,email,region\nA,,east\n", dataset="contacts").json()["rejected_count"], 1)
+        self.assertEqual(self.upload(content, dataset="contacts", required="region").status_code, 409)
+        for params in ({"pattern": "email:("}, {"allow": "region"}, {"required": "missing"}):
+            with self.subTest(params=params):
+                self.assertEqual(self.upload(content, dataset="fresh", **params).status_code, 400)
+        self.assertEqual(self.client.get("/datasets").json()[0]["rules"], result["rules"])
+        parameters = self.client.get("/openapi.json").json()["paths"]["/datasets/{dataset}/imports"]["post"]
+        self.assertTrue({"required", "allow", "pattern"} <= {item["name"] for item in parameters["parameters"]})
 
     def test_records_filter_by_repeated_issue_parameters(self):
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n,Missing\nC\n").json()

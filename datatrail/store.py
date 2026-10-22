@@ -13,16 +13,23 @@ import sqlite3
 from .compare import compare, iter_changes, key_history
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
-from .rules import parse_column_types
+from .rules import parse_column_types, parse_rules, saved_rules
+from .versions import select_versions
 
 
 CHANGE_KINDS = ("added", "removed", "changed")
 DEFAULT_DATABASE = ".local/datatrail.sqlite3"
-IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, d.column_types_json, i.version, i.source_name,
-    i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
-# Columns added after the first release. Older databases gain them, with their defaults, on startup.
-ADDED_COLUMNS = (("datasets", "column_types_json", "TEXT NOT NULL DEFAULT '{}'"),
-                 ("records", "invalid_columns_json", "TEXT NOT NULL DEFAULT '[]'"))
+IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, d.column_types_json, d.rules_json, i.version,
+    i.source_name, i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
+# Columns added after the first release. Older databases gain them, with their defaults, on startup. The
+# optional statement then fills the new column from existing data, in the same transaction.
+ADDED_COLUMNS = (("datasets", "column_types_json", "TEXT NOT NULL DEFAULT '{}'", None),
+                 ("records", "invalid_columns_json", "TEXT NOT NULL DEFAULT '[]'", None),
+                 ("datasets", "rules_json", "TEXT NOT NULL DEFAULT '{}'", None),
+                 # Before value rules, a column could only be invalid because it failed its type.
+                 ("records", "failed_rules_json", "TEXT NOT NULL DEFAULT '{}'",
+                  """UPDATE records SET failed_rules_json = (SELECT json_group_object(value, json_array('type'))
+                     FROM json_each(records.invalid_columns_json)) WHERE invalid_columns_json <> '[]'"""))
 
 
 def default_database() -> Path:
@@ -59,13 +66,14 @@ def import_dict(row) -> dict:
     result = dict(row)
     result["headers"] = json.loads(result.pop("headers_json"))
     result["column_types"] = json.loads(result.pop("column_types_json"))
+    result["rules"] = saved_rules(json.loads(result.pop("rules_json")))
     return result
 
 
 def record_dict(row) -> dict:
     """Turn a record row into its JSON shape, decoding the stored JSON columns."""
     result = dict(row)
-    for name in ("raw", "data", "issues", "invalid_columns"):
+    for name in ("raw", "data", "issues", "invalid_columns", "failed_rules"):
         value = result.pop(f"{name}_json")
         result[name] = json.loads(value) if value is not None else None
     result.pop("issue_count", None)
@@ -91,9 +99,11 @@ class Store:
         with closing(self.connect()) as connection:
             connection.executescript(Path(__file__).with_name("schema.sql").read_text())
             connection.execute("BEGIN IMMEDIATE")
-            for table, column, definition in ADDED_COLUMNS:
+            for table, column, definition, backfill in ADDED_COLUMNS:
                 if column not in {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                    if backfill:
+                        connection.execute(backfill)
             connection.commit()
 
     def _import(self, connection, identifier: int) -> dict:
@@ -113,26 +123,32 @@ class Store:
         result["issue_counts"] = {code: counts.get(code, 0) for code in ISSUE_CODES}
         return result
 
-    def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None) -> dict:
+    def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None,
+                   required=None, allowed=None, patterns=None) -> dict:
         """Save a CSV file as the dataset's next version, or return the existing import for identical bytes.
 
-        The dataset is created on first use with this key column and column types; later imports must match
-        them. The result includes `replayed`, which is true for an exact retry.
+        The dataset is created on first use with this key column, column types and value rules (`required`,
+        `allowed` and `patterns`, see `parse_rules`); later imports must match them. The result includes
+        `replayed`, which is true for an exact retry.
         """
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
             raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, "
                                "starting with a letter or digit.")
         if not source_name or len(source_name) > 255 or any(ord(char) < 32 for char in source_name):
             raise InvalidInput("Source name must be 1–255 characters without control characters.")
-        # Omitted column types mean "use the dataset's saved types"; a new dataset then has none.
+        # Omitted column types or value rules mean "use the dataset's saved ones"; a new dataset then has none.
         types = parse_column_types(column_types) if column_types else None
-        if types is None:
+        rules = parse_rules(required or [], allowed or [], patterns or []) if required or allowed or patterns else None
+        if types is None or rules is None:
             with closing(self.connect()) as connection:
                 saved = connection.execute(
-                    "SELECT column_types_json FROM datasets WHERE name = ?", (dataset,)
+                    "SELECT column_types_json, rules_json FROM datasets WHERE name = ?", (dataset,)
                 ).fetchone()
-            types = json.loads(saved["column_types_json"]) if saved else {}
-        headers, rows = parse_csv(content, key_column, types)
+            if types is None:
+                types = json.loads(saved["column_types_json"]) if saved else {}
+            if rules is None:
+                rules = saved_rules(json.loads(saved["rules_json"]) if saved else {})
+        headers, rows = parse_csv(content, key_column, types, rules)
         digest = hashlib.sha256(content).hexdigest()
         accepted = sum(not row.issues for row in rows)
         with closing(self.connect()) as connection, connection:
@@ -140,14 +156,16 @@ class Store:
             existing = connection.execute("SELECT * FROM datasets WHERE name = ?", (dataset,)).fetchone()
             if existing is None:
                 dataset_id = connection.execute(
-                    "INSERT INTO datasets (name, key_column, column_types_json) VALUES (?, ?, ?)",
-                    (dataset, key_column, json.dumps(types)),
+                    "INSERT INTO datasets (name, key_column, column_types_json, rules_json) VALUES (?, ?, ?, ?)",
+                    (dataset, key_column, json.dumps(types), json.dumps(rules)),
                 ).lastrowid
             else:
                 if existing["key_column"] != key_column:
                     raise Conflict("A dataset's key column cannot change. Use a new dataset name.")
                 if json.loads(existing["column_types_json"]) != types:
                     raise Conflict("A dataset's column types cannot change. Use a new dataset name.")
+                if saved_rules(json.loads(existing["rules_json"])) != rules:
+                    raise Conflict("A dataset's value rules cannot change. Use a new dataset name.")
                 dataset_id = existing["id"]
             previous = connection.execute(
                 "SELECT id FROM imports WHERE dataset_id = ? AND sha256 = ?", (dataset_id, digest)
@@ -166,10 +184,11 @@ class Store:
             ).lastrowid
             connection.executemany(
                 """INSERT INTO records (import_id, number, source_line, entity_key, raw_json,
-                   data_json, issues_json, issue_count, invalid_columns_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   data_json, issues_json, issue_count, invalid_columns_json, failed_rules_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 ((identifier, row.number, row.line, row.key, json.dumps(row.raw),
-                  json.dumps(row.data) if row.data is not None else None,
-                  json.dumps(row.issues), len(row.issues), json.dumps(row.invalid)) for row in rows),
+                  json.dumps(row.data) if row.data is not None else None, json.dumps(row.issues),
+                  len(row.issues), json.dumps(row.invalid), json.dumps(row.failed)) for row in rows),
             )
             return {**self._import(connection, identifier), "replayed": False}
 
@@ -177,9 +196,10 @@ class Store:
         """List datasets by name with their import count and latest version."""
         check_page(limit, offset)
         with closing(self.connect()) as connection:
-            return [{**dict(row), "column_types": json.loads(row["column_types"])} for row in connection.execute(
-                """SELECT d.name, d.key_column, d.column_types_json AS column_types, COUNT(i.id) AS import_count,
-                   MAX(i.version) AS latest_version
+            return [{**dict(row), "column_types": json.loads(row["column_types"]),
+                     "rules": saved_rules(json.loads(row["rules"]))} for row in connection.execute(
+                """SELECT d.name, d.key_column, d.column_types_json AS column_types, d.rules_json AS rules,
+                   COUNT(i.id) AS import_count, MAX(i.version) AS latest_version
                    FROM datasets d LEFT JOIN imports i ON i.dataset_id = d.id
                    GROUP BY d.id ORDER BY d.name LIMIT ? OFFSET ?""", (limit, offset)
             )]
@@ -280,30 +300,6 @@ class Store:
                 "skipped_flagged": skipped, "events": events[offset:offset + limit], "total_events": len(events),
                 "limit": limit, "offset": offset}
 
-    def _version(self, connection, dataset: str, version: int, option: str, role: str) -> dict:
-        """A clean import chosen by version; `option` and `role` only shape error messages."""
-        if type(version) is not int or version < 1:
-            raise InvalidInput(f"{option} must be a positive dataset version.")
-        row = connection.execute(
-            """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
-               WHERE d.name = ? AND i.version = ?""", (dataset, version)
-        ).fetchone()
-        if row is None:
-            raise NotFound(f"Dataset '{dataset}' has no version {version}.")
-        if row["rejected_count"]:
-            raise Conflict(f"Version {version} has flagged records and cannot be {role}.")
-        return row
-
-    def _clean(self, connection, dataset: str, above=0, below=None, count=1) -> list:
-        """Up to `count` clean imports between two versions (exclusive), newest first."""
-        query = """SELECT i.id, i.version FROM imports i JOIN datasets d ON d.id = i.dataset_id
-                   WHERE d.name = ? AND i.rejected_count = 0 AND i.version > ?"""
-        params = [dataset, above]
-        if below is not None:
-            query += " AND i.version < ?"
-            params.append(below)
-        return connection.execute(query + " ORDER BY i.version DESC LIMIT ?", (*params, count)).fetchall()
-
     def select_versions(self, dataset: str, since=None, until=None) -> dict:
         """Pick two clean snapshots by version: the two newest by default, or `since`/`until`.
 
@@ -311,41 +307,7 @@ class Store:
         """
         with closing(self.connect()) as connection:
             self._dataset(connection, dataset)
-            if since is not None:
-                baseline = self._version(connection, dataset, since, "Since", "a baseline")
-            if until is not None:
-                # A chosen end version replaces the newest clean snapshot as the newer side.
-                newest = self._version(connection, dataset, until, "Until", "an end version")
-                if since is None:
-                    older = self._clean(connection, dataset, below=until)
-                    if not older:
-                        raise Conflict(f"Dataset '{dataset}' has no clean snapshot older than version {until}.")
-                    baseline = older[0]
-                elif since >= until:
-                    raise InvalidInput("Since must be an older version than until.")
-                clean = [newest, baseline]
-            elif since is None:
-                clean = self._clean(connection, dataset, count=2)
-                if len(clean) < 2:
-                    raise Conflict(f"Dataset '{dataset}' needs two clean snapshots to compare.")
-            else:
-                # A chosen baseline is compared with the newest clean snapshot after it.
-                newest = self._clean(connection, dataset, above=since)
-                if not newest:
-                    raise Conflict(f"Dataset '{dataset}' has no clean snapshot newer than version {since}.")
-                clean = [newest[0], baseline]
-            # Flagged snapshots after the baseline are skipped, but callers should know they exist.
-            # With a chosen end version, only those inside the compared range are listed.
-            query = """SELECT i.id, i.version, i.rejected_count FROM imports i JOIN datasets d ON d.id = i.dataset_id
-                       WHERE d.name = ? AND i.rejected_count > 0 AND i.version > ?"""
-            params = [dataset, clean[1]["version"]]
-            if until is not None:
-                query += " AND i.version < ?"
-                params.append(until)
-            skipped = [dict(row) for row in connection.execute(query + " ORDER BY i.version DESC", params)]
-        return {"dataset": dataset, "before_id": clean[1]["id"], "after_id": clean[0]["id"],
-                "before_version": clean[1]["version"], "after_version": clean[0]["version"],
-                "skipped_flagged": skipped}
+            return select_versions(connection, dataset, since, until)
 
     def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None) -> dict:
         """Diff the clean snapshots chosen by `select_versions`, adding their versions and `skipped_flagged`."""

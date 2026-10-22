@@ -1,0 +1,6 @@
+contact_id,supplier_id,email,region
+C01,S001,ana@northline.example,west
+C02,S002,,east
+C03,S02,ben@harbor.example,east
+C04,S003,cara@elm.example,Northwest
+C05,S003,dev@elm.example,west

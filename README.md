@@ -5,11 +5,12 @@
 Datatrail is a small backend for investigating what changed between CSV
 exports of the same dataset. Each import is saved as a versioned snapshot with
 its exact original bytes and a row-level quality report. Rows with duplicate,
-missing or malformed keys, wrong column counts or values that fail declared
-column types are kept and labelled instead of being dropped, and snapshots
-with flagged rows are never used for comparisons. Clean snapshots can be
-compared field by field, and any key can be traced back through every version
-to its source file and line, or read as a history of when its values changed.
+missing or malformed keys, wrong column counts, empty required cells or values
+that fail declared column types, allowed values or patterns are kept and
+labelled instead of being dropped, and snapshots with flagged rows are never
+used for comparisons. Clean snapshots can be compared field by field, and any
+key can be traced back through every version to its source file and line, or
+read as a history of when its values changed.
 It runs as a command-line tool (standard library only) or a FastAPI service,
 both backed by one SQLite file.
 
@@ -27,7 +28,8 @@ The demo imports the fictional files in `examples/` into a temporary database
 and prints the results as JSON. Two supplier exports differ by one moved, one
 removed and one added supplier. A third, messy export is flagged and left out
 of the comparison. An invoice file has an amount and a due date that fail
-their column types.
+their column types, and a contacts file has a missing email, a malformed
+supplier ID and an unexpected region.
 
 ## Usage
 
@@ -53,6 +55,10 @@ python3 -m datatrail records 3 --issue duplicate_key
 python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
   --type amount:decimal --type due_date:date
 python3 -m datatrail records 4 --issue invalid_value
+python3 -m datatrail import contacts examples/contacts.csv --key contact_id \
+  --required email --allow region:east --allow region:west \
+  --pattern 'supplier_id:S[0-9]{3}'
+python3 -m datatrail records 5 --flagged
 ```
 
 The IDs above assume a fresh database; use the IDs your imports return. Every
@@ -88,6 +94,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | --- | --- | --- |
 | POST | `/datasets/{name}/imports?key=column&source_name=file.csv` | Upload raw CSV bytes |
 | POST | `/datasets/{name}/imports?key=column&type=amount:decimal` | Upload with column type checks |
+| POST | `/datasets/{name}/imports?key=column&required=email&allow=region:east` | Upload with value rules |
 | GET | `/datasets` | List datasets |
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
 | GET | `/imports/{id}` | Import metadata and quality counts |
@@ -112,9 +119,9 @@ and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid CSV or column type rules |
+| `400` | Invalid CSV, column types or value rules |
 | `404` | Missing dataset, import or version |
-| `409` | Changed key column or column types, or a comparison involving flagged snapshots |
+| `409` | Changed key column, column types or value rules, or a comparison involving flagged snapshots |
 | `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
 | `415` | Body is not `Content-Type: text/csv` |
 | `422` | Invalid query parameters, including `limit` or `offset` on a CSV export, or `spreadsheet` on JSON |
@@ -150,7 +157,8 @@ local one.
   matching is case-sensitive.
 - Each dataset has one key column, fixed when the dataset is created.
 - Structurally invalid CSV, a bad encoding, an exceeded limit, or a missing key
-  or typed column rejects the whole file and saves nothing.
+  column or column with a type or value rule rejects the whole file and saves
+  nothing.
 - Row-level problems are saved with the raw cells and one or more issue codes:
 
   | Code | Meaning |
@@ -158,7 +166,8 @@ local one.
   | `column_count` | The row has more or fewer cells than the header |
   | `missing_key` | The key cell is empty |
   | `duplicate_key` | The key appears more than once; every occurrence is flagged, none is picked as the winner |
-  | `invalid_value` | A cell does not match its column type |
+  | `invalid_value` | A cell does not match its column type, allowed values or pattern |
+  | `missing_value` | A required cell is empty |
 
 - Blank lines are skipped. A header-only file is a valid empty snapshot.
 - Importing identical bytes into the same dataset again returns the original
@@ -189,6 +198,39 @@ dataset is checked by the same rules. `datasets`, `show` and import responses
 include `column_types`. Databases created before column types existed are
 upgraded in place on startup; their datasets have no types.
 
+## Value rules
+
+Value rules check what a column may contain beyond its type. Each is
+repeatable on `import` and in the upload query string:
+
+| CLI | API | Flags a row when |
+| --- | --- | --- |
+| `--required COLUMN` | `required=COLUMN` | The cell is empty (`missing_value`) |
+| `--allow COLUMN:VALUE` | `allow=COLUMN:VALUE` | The cell is not one of the column's allowed values (`invalid_value`) |
+| `--pattern COLUMN:PATTERN` | `pattern=COLUMN:PATTERN` | The cell does not fully match the regular expression (`invalid_value`) |
+
+- Each `--allow` adds one accepted value, so values may contain commas.
+  Everything after the first colon is the value or pattern, so those may
+  contain colons, but a column named in a value rule cannot. A column can have
+  up to 1,000 allowed values and one pattern of at most 256 characters.
+- Columns, values and patterns are trimmed, since cells are trimmed before they
+  are checked. Matching is exact and case-sensitive; use `(?i)` in a pattern to
+  ignore case. Patterns use Python's `re` syntax and must match the whole value,
+  so `S[0-9]{3}` accepts `S001` but not `S0011`. An invalid pattern is a `400`.
+- Like types, allowed values and patterns only check nonempty cells. Add
+  `--required` to also reject empty ones. The key column is always required, so
+  naming it in `--required` is an error.
+- Rules combine with each other and with types. `records` lists each flagged
+  row's failing columns in `invalid_columns` and the rules each one broke in
+  `failed_rules`, for example `{"qty": ["type"], "region": ["allowed"]}`.
+
+Value rules are saved with the dataset on its first import and work like column
+types: later imports can leave them all out, or repeat the same set in any
+order. Changing, adding or dropping a rule is a conflict. `datasets`, `show` and
+import responses include `rules`. Databases created before value rules existed
+are upgraded in place on startup: their datasets have no rules, and rows that
+failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
+
 ## Investigating changes
 
 - `show ID` prints one import's source name, SHA-256, timestamp, columns, column
@@ -196,6 +238,8 @@ upgraded in place on startup; their datasets have no types.
   with zeros for codes that did not occur. It never prints the file contents.
 - `records ID` shows raw cells, normalized values, issue codes, record numbers
   and the starting line of each record, including after multiline fields.
+  Rows that break a type or value rule list the failing columns and rules in
+  `invalid_columns` and `failed_rules`.
   `--flagged` lists only flagged rows, and `--issue CODE` (repeatable) only rows
   with any of those codes.
 - `trace DATASET KEY` finds an exact normalized key in every version, newest
@@ -288,8 +332,9 @@ from an imported value that already started with an apostrophe.
 | Module | Responsibility |
 | --- | --- |
 | `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
-| `datatrail/rules.py` | Column type specs and the values each type accepts |
+| `datatrail/rules.py` | Column types and value rules, and the cells each one accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
+| `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
 | `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
@@ -315,16 +360,16 @@ python3 -m venv .venv
 ```
 
 Tests use temporary databases and synthetic fixtures. They cover parsing edge
-cases, duplicate handling, source preservation, atomic rollback, concurrent
-retries and version allocation, schema upgrades, key history, pagination, CLI
-and API error paths, formula escaping, and the demo.
+cases, duplicate handling, value rules, source preservation, atomic rollback,
+concurrent retries and version allocation, schema upgrades, key history,
+pagination, CLI and API error paths, formula escaping, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
-port. It checks uploads, retries, quality and type checks, diffs, version
-lookups, key history, plain and spreadsheet CSV exports, source downloads, CLI
-and API sharing one database, and persistence across container recreation, then
-removes everything it created.
+port. It checks uploads, retries, quality, type and value rule checks, diffs,
+version lookups, key history, plain and spreadsheet CSV exports, source
+downloads, CLI and API sharing one database, and persistence across container
+recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.
@@ -346,6 +391,10 @@ check.
 - `history` only sees clean versions, so a value that changed and changed back
   inside flagged imports leaves no event; check `skipped_flagged`.
 - Column types cover integers, decimals and ISO dates only; there are no
-  required columns, enums, ranges or locale-specific number formats. A dataset's
-  key column and types cannot change; use a new dataset name.
+  numeric or date ranges, cross-column checks or locale-specific number formats.
+  A dataset's key column, types and value rules cannot change; use a new dataset
+  name.
+- Patterns run with Python's `re`, which has no time limit. A pattern with
+  nested repetition, such as `(a+)+$`, can take very long on some values and
+  holds up that import. Only use patterns you trust.
 - Versions reflect import order, not dates inside the files.
