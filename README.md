@@ -290,6 +290,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
 | `datatrail/rules.py` | Column type specs and the values each type accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
+| `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
 | `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
