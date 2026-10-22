@@ -34,6 +34,8 @@ def parser():
     datasets = commands.add_parser("datasets", help="List datasets")
     imports = commands.add_parser("imports", help="List dataset snapshots")
     imports.add_argument("dataset")
+    summary = commands.add_parser("summary", help="Show a dataset's quality and change counts for each version")
+    summary.add_argument("dataset")
     show = commands.add_parser("show", help="Show one import's source details and quality counts")
     show.add_argument("import_id", type=int)
     records = commands.add_parser("records", help="Inspect original and normalized values")
@@ -62,7 +64,7 @@ def parser():
         command.add_argument("--spreadsheet", action="store_true",
                              help="With --format csv, add a byte order mark and escape values that spreadsheets "
                                   "would run as formulas")
-    for command in (datasets, imports, records, trace, history, diff, changes):
+    for command in (datasets, imports, summary, records, trace, history, diff, changes):
         # None means "not given", so a CSV export can reject explicit pagination.
         command.add_argument("--limit", type=int, help="Results per page, 1–1000 (default 100)")
         command.add_argument("--offset", type=int, help="Results to skip (default 0)")
@@ -118,6 +120,8 @@ def main(argv=None):
             result = store.datasets(args.limit, args.offset)
         elif args.command == "imports":
             result = store.imports(args.dataset, args.limit, args.offset)
+        elif args.command == "summary":
+            result = store.summary(args.dataset, args.limit, args.offset)
         elif args.command == "show":
             result = store.get_import(args.import_id)
         elif args.command == "records":

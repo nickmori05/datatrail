@@ -34,6 +34,7 @@ def main():
         trail = cli("trace", "suppliers", "S002")
         history = cli("history", "suppliers", "S002")
         latest = cli("changes", "suppliers", "--kind", "changed")
+        summary = cli("summary", "suppliers")
         export = cli("changes", "suppliers", "--format", "csv", parse=lambda text: list(csv.reader(io.StringIO(text))))
         invoices = cli("import", "invoices", "examples/invoices.csv", "--key", "invoice_id",
                        "--type", "amount:decimal", "--type", "due_date:date", expected=1)
@@ -44,6 +45,7 @@ def main():
         failures = cli("records", str(contacts["id"]), "--flagged")
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
                           "supplier_trail": trail, "supplier_history": history, "latest_changes": latest,
+                          "supplier_summary": summary,
                           "invalid_values": invalid, "rule_failures": failures, "changes_csv": export}, indent=2))
 
 
