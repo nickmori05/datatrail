@@ -49,8 +49,8 @@ class CliTests(unittest.TestCase):
             self.assertTrue(errors.startswith("Error:"))
 
     def test_show_reports_saved_metadata_for_clean_and_flagged_imports(self):
-        for fixture, expected_counts, issues in (("suppliers-before.csv", (3, 3, 0), (0, 0, 0, 0)),
-                                                 ("suppliers-messy.csv", (5, 1, 4), (1, 1, 2, 0))):
+        for fixture, expected_counts, issues in (("suppliers-before.csv", (3, 3, 0), (0, 0, 0, 0, 0)),
+                                                 ("suppliers-messy.csv", (5, 1, 4), (1, 1, 2, 0, 0))):
             with self.subTest(fixture=fixture):
                 _, output, _ = self.import_example(fixture)
                 imported = json.loads(output)
@@ -231,7 +231,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(demo["comparison"]["counts"], {"added": 1, "removed": 1, "changed": 1, "unchanged": 1})
         self.assertEqual(len(demo["flagged_records"]), 4)
         self.assertEqual(demo["issue_counts"], {"column_count": 1, "missing_key": 1, "duplicate_key": 2,
-                                                "invalid_value": 0})
+                                                "invalid_value": 0, "missing_value": 0})
         self.assertEqual([row["version"] for row in demo["supplier_trail"]], [3, 3, 2, 1])
         history = demo["supplier_history"]
         self.assertEqual([(event["version"], event["kind"]) for event in history["events"]],

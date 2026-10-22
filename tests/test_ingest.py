@@ -56,7 +56,7 @@ class ColumnTypeTests(unittest.TestCase):
         types = {"qty": "integer", "price": "decimal", "due": "date"}
         _, rows = parse_csv(content, "id", types)
         self.assertEqual([row.invalid for row in rows], [
-            [], [], [], ["qty", "price", "due"], ["qty", "price", "due"], ["qty", "due"]])
+            [], [], [], ["due", "price", "qty"], ["due", "price", "qty"], ["due", "qty"]])
         self.assertEqual([row.issues for row in rows], [[], [], [], *[["invalid_value"]] * 3])
 
     def test_type_checks_use_normalized_cells_and_combine_with_other_issues(self):

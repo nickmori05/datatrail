@@ -152,9 +152,9 @@ class StoreTests(unittest.TestCase):
     def test_issue_counts_break_down_flagged_rows_by_code(self):
         clean = self.ingest()
         self.assertEqual(clean["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 0,
-                                                 "invalid_value": 0})
+                                                 "invalid_value": 0, "missing_value": 0})
         dirty = self.ingest(b"id,name\nA,Ada\nB,Bob\nB,Bill\nB,Ben\n,Missing\nC\nD,x,y\n")
-        expected = {"column_count": 2, "missing_key": 1, "duplicate_key": 3, "invalid_value": 0}
+        expected = {"column_count": 2, "missing_key": 1, "duplicate_key": 3, "invalid_value": 0, "missing_value": 0}
         self.assertEqual(dirty["issue_counts"], expected)
         self.assertEqual(sum(expected.values()), dirty["rejected_count"])
         self.assertEqual(self.store.get_import(dirty["id"])["issue_counts"], expected)

@@ -6,18 +6,22 @@ from dataclasses import dataclass, field
 import io
 
 from .errors import InvalidInput
-from .rules import invalid_columns
+from .rules import Checks, saved_rules
 
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 10_000
 MAX_COLUMNS = 64
-ISSUE_CODES = ("column_count", "missing_key", "duplicate_key", "invalid_value")
+ISSUE_CODES = ("column_count", "missing_key", "duplicate_key", "invalid_value", "missing_value")
 
 
 @dataclass
 class ParsedRow:
-    """One CSV record: original cells, trimmed values when the shape is valid, and its issue codes."""
+    """One CSV record: original cells, trimmed values when the shape is valid, and its issue codes.
+
+    `failed` maps each column that breaks a type or value rule to the rules it breaks; `invalid` lists those
+    columns by name.
+    """
 
     number: int
     line: int
@@ -25,17 +29,26 @@ class ParsedRow:
     raw: list[str]
     data: dict[str, str] | None
     issues: list[str]
-    invalid: list[str] = field(default_factory=list)
+    failed: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def invalid(self) -> list[str]:
+        """Columns that break a rule, by name."""
+        return list(self.failed)
 
 
-def parse_csv(content: bytes, key_column: str,
-              column_types: dict[str, str] | None = None) -> tuple[list[str], list[ParsedRow]]:
+def parse_csv(content: bytes, key_column: str, column_types: dict[str, str] | None = None,
+              rules: dict | None = None) -> tuple[list[str], list[ParsedRow]]:
     """Parse a whole CSV file and flag row-level problems.
 
     Returns the trimmed header and every nonblank record in source order. Problems that make the
-    file unusable (encoding, quoting, limits, header, missing key or typed column) raise InvalidInput.
+    file unusable (encoding, quoting, limits, header, missing key, typed or rule column) raise InvalidInput.
     """
     column_types = column_types or {}
+    rules = saved_rules(rules or {})
+    if key_column in rules["required"]:
+        raise InvalidInput("The key column is always required; leave it out of the required columns.")
+    checks = Checks(column_types, rules)
     if len(content) > MAX_BYTES:
         raise InvalidInput(f"CSV files must be at most {MAX_BYTES // (1024 * 1024)} MiB.")
     try:
@@ -54,9 +67,10 @@ def parse_csv(content: bytes, key_column: str,
             raise InvalidInput("Column names must be unique after trimming whitespace.")
         if key_column not in headers:
             raise InvalidInput(f"Key column '{key_column}' is missing.")
-        for column in column_types:
+        for column in checks.columns:
             if column not in headers:
-                raise InvalidInput(f"Typed column '{column}' is missing.")
+                kind = "Typed" if column in column_types else "Rule"
+                raise InvalidInput(f"{kind} column '{column}' is missing.")
         while True:
             line = reader.line_num + 1
             raw = next(reader, None)
@@ -69,7 +83,7 @@ def parse_csv(content: bytes, key_column: str,
             issues = []
             data = None
             key = None
-            invalid = []
+            failed = {}
             if len(raw) != len(headers):
                 issues.append("column_count")
             else:
@@ -77,14 +91,17 @@ def parse_csv(content: bytes, key_column: str,
                 key = data[key_column]
                 if not key:
                     issues.append("missing_key")
-                invalid = invalid_columns(data, column_types)
-            rows.append(ParsedRow(len(rows) + 1, line, key, raw, data, issues, invalid))
+                failed = checks.failures(data)
+            rows.append(ParsedRow(len(rows) + 1, line, key, raw, data, issues, failed))
     except csv.Error as error:
         raise InvalidInput(f"Invalid CSV near line {reader.line_num}: {error}") from error
     counts = Counter(row.key for row in rows if row.key)
     for row in rows:
         if row.key and counts[row.key] > 1:
             row.issues.append("duplicate_key")
-        if row.invalid:
+        broken = {rule for rules in row.failed.values() for rule in rules}
+        if broken - {"required"}:
             row.issues.append("invalid_value")
+        if "required" in broken:
+            row.issues.append("missing_value")
     return headers, rows

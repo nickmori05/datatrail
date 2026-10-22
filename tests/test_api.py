@@ -182,7 +182,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(dirty.json()["rejected_count"], 2)
         details = self.client.get(f"/imports/{dirty.json()['id']}").json()
         self.assertEqual(details["issue_counts"], {"column_count": 0, "missing_key": 0, "duplicate_key": 2,
-                                                  "invalid_value": 0})
+                                                  "invalid_value": 0, "missing_value": 0})
         rows = self.client.get(f"/imports/{dirty.json()['id']}/records",
                                params={"flagged": True, "limit": 1, "offset": 1}).json()
         self.assertEqual(rows[0]["number"], 3)
