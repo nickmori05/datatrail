@@ -24,6 +24,13 @@ def parser():
     ingest.add_argument("--type", action="append", dest="column_types", metavar="COLUMN:TYPE",
                         help="Flag rows whose COLUMN is not a TYPE (integer, decimal or date); repeatable, "
                              "fixed for the dataset")
+    ingest.add_argument("--required", action="append", metavar="COLUMN",
+                        help="Flag rows where COLUMN is empty; repeatable, fixed for the dataset with the other "
+                             "value rules")
+    ingest.add_argument("--allow", action="append", dest="allowed", metavar="COLUMN:VALUE",
+                        help="Accept VALUE in COLUMN; repeat for each value, and other values are flagged")
+    ingest.add_argument("--pattern", action="append", dest="patterns", metavar="COLUMN:PATTERN",
+                        help="Flag rows whose COLUMN does not fully match the Python regular expression PATTERN")
     datasets = commands.add_parser("datasets", help="List datasets")
     imports = commands.add_parser("imports", help="List dataset snapshots")
     imports.add_argument("dataset")
@@ -104,7 +111,8 @@ def main(argv=None):
         if args.command == "import":
             with args.file.open("rb") as source:
                 content = source.read(MAX_BYTES + 1)
-            result = store.import_csv(args.dataset, args.key, content, args.file.name, args.column_types)
+            result = store.import_csv(args.dataset, args.key, content, args.file.name, args.column_types,
+                                      args.required, args.allowed, args.patterns)
             code = 1 if result["rejected_count"] else 0
         elif args.command == "datasets":
             result = store.datasets(args.limit, args.offset)

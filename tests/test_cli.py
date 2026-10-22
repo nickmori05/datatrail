@@ -96,6 +96,27 @@ class CliTests(unittest.TestCase):
             self.assertEqual((code, output), (2, ""))
             self.assertIn(message, errors)
 
+    def test_import_rule_options_flag_missing_and_unexpected_values(self):
+        source = str(ROOT / "examples" / "contacts.csv")
+        rules = ("--required", "email", "--allow", "region:east", "--allow", "region:west",
+                 "--pattern", "supplier_id:S[0-9]{3}")
+        code, output, errors = self.call("import", "contacts", source, "--key", "contact_id", *rules)
+        self.assertEqual(code, 1, errors)
+        result = json.loads(output)
+        self.assertEqual(result["rules"], {"required": ["email"], "allowed": {"region": ["east", "west"]},
+                                           "patterns": {"supplier_id": "S[0-9]{3}"}})
+        self.assertEqual((result["issue_counts"]["missing_value"], result["issue_counts"]["invalid_value"]), (1, 2))
+        _, output, _ = self.call("records", str(result["id"]), "--flagged")
+        self.assertEqual([(row["number"], row["issues"], row["failed_rules"]) for row in json.loads(output)], [
+            (2, ["missing_value"], {"email": ["required"]}), (3, ["invalid_value"], {"supplier_id": ["pattern"]}),
+            (4, ["invalid_value"], {"region": ["allowed"]})])
+        for args, message in ((("--required", "region"), "value rules cannot change"),
+                              (("--pattern", "email:["), "not a valid regular expression"),
+                              (("--allow", "region"), "COLUMN:VALUE")):
+            code, output, errors = self.call("import", "contacts", source, "--key", "contact_id", *args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_diff_kind_option_limits_listed_changes(self):
         ids = []
         for fixture in ("suppliers-before.csv", "suppliers-after.csv"):
@@ -242,6 +263,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
         self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
                          [(3, ["amount"]), (4, ["due_date"])])
+        self.assertEqual([(row["number"], row["failed_rules"]) for row in demo["rule_failures"]], [
+            (2, {"email": ["required"]}), (3, {"supplier_id": ["pattern"]}), (4, {"region": ["allowed"]})])
         self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",
                                                     "after_record"], ["S002", "changed", "city", "Boston", "Chicago",
                                                                       "2", "2"]])

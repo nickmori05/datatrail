@@ -115,9 +115,16 @@ def create_app(database: Path | None = None) -> FastAPI:
     async def import_csv(dataset: str, request: Request, response: Response,
                          key: str = Query(min_length=1, max_length=128),
                          source_name: str = Query(default="upload.csv", min_length=1, max_length=255),
-                         column_types: list[str] = Query(default=[], alias="type")):
+                         column_types: list[str] = Query(default=[], alias="type"),
+                         required: list[str] = Query(default=[], description="A column that must not be empty"),
+                         allowed: list[str] = Query(default=[], alias="allow",
+                                                    description="COLUMN:VALUE, one accepted value per parameter"),
+                         patterns: list[str] = Query(default=[], alias="pattern",
+                                                     description="COLUMN:PATTERN, a Python regular expression that "
+                                                                 "nonempty values must fully match")):
         content = await read_csv(request)
-        result = await run_in_threadpool(store.import_csv, dataset, key, content, source_name, column_types)
+        result = await run_in_threadpool(store.import_csv, dataset, key, content, source_name, column_types,
+                                         required, allowed, patterns)
         response.status_code = 200 if result["replayed"] else 201
         response.headers["Location"] = f"/imports/{result['id']}"
         return result

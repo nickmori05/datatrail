@@ -38,9 +38,13 @@ def main():
         invoices = cli("import", "invoices", "examples/invoices.csv", "--key", "invoice_id",
                        "--type", "amount:decimal", "--type", "due_date:date", expected=1)
         invalid = cli("records", str(invoices["id"]), "--issue", "invalid_value")
+        contacts = cli("import", "contacts", "examples/contacts.csv", "--key", "contact_id", "--required", "email",
+                       "--allow", "region:east", "--allow", "region:west", "--pattern", "supplier_id:S[0-9]{3}",
+                       expected=1)
+        failures = cli("records", str(contacts["id"]), "--flagged")
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
                           "supplier_trail": trail, "supplier_history": history, "latest_changes": latest,
-                          "invalid_values": invalid, "changes_csv": export}, indent=2))
+                          "invalid_values": invalid, "rule_failures": failures, "changes_csv": export}, indent=2))
 
 
 if __name__ == "__main__":

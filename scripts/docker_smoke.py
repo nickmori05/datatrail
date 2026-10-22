@@ -74,6 +74,17 @@ def main():
         assert [row["invalid_columns"] for row in invalid] == [["amount"], ["due_date"]], invalid
         request(base, "/datasets/invoices/imports?key=invoice_id&type=amount:integer", invoice_bytes, expected=409)
         request(base, "/datasets/other/imports?key=invoice_id&type=amount:money", invoice_bytes, expected=400)
+        contact_bytes = (ROOT / "examples/contacts.csv").read_bytes()
+        ruled = ("/datasets/contacts/imports?key=contact_id&required=email&allow=region:east&allow=region:west"
+                 "&pattern=supplier_id:S%5B0-9%5D%7B3%7D")
+        contacts = request(base, ruled, contact_bytes, expected=201)
+        counts = contacts["issue_counts"]
+        assert (counts["missing_value"], counts["invalid_value"]) == (1, 2), contacts
+        failed = request(base, f"/imports/{contacts['id']}/records?flagged=true")
+        assert [row["failed_rules"] for row in failed] == [{"email": ["required"]}, {"supplier_id": ["pattern"]},
+                                                           {"region": ["allowed"]}], failed
+        request(base, "/datasets/contacts/imports?key=contact_id&required=region", contact_bytes, expected=409)
+        request(base, "/datasets/other/imports?key=contact_id&pattern=email:(", contact_bytes, expected=400)
         request(base, f"/diff?before={before['id']}&after={messy['id']}", expected=409)
         latest = request(base, "/datasets/suppliers/changes?kind=changed")
         assert (latest["before_id"], latest["after_id"]) == (before["id"], after["id"]), latest
@@ -105,10 +116,10 @@ def main():
         assert [row["number"] for row in history["skipped_flagged"][0]["key_records"]] == [2, 3], history
         request(base, "/datasets/missing/history?key=S002", expected=404)
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
-        assert {item["name"]: item["import_count"] for item in datasets} == {"invoices": 1, "notes": 2,
-                                                                             "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality and type checks, diffs, plain and spreadsheet CSV exports, latest "
-              "changes, provenance, key history and CLI reads passed.", flush=True)
+        assert {item["name"]: item["import_count"] for item in datasets} == {
+            "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
+        print("HTTP imports, retries, quality, type and value rule checks, diffs, plain and spreadsheet CSV exports, "
+              "latest changes, provenance, key history and CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()
