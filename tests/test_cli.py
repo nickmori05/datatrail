@@ -117,6 +117,28 @@ class CliTests(unittest.TestCase):
             self.assertEqual((code, output), (2, ""))
             self.assertIn(message, errors)
 
+    def test_import_range_options_flag_values_outside_the_bounds(self):
+        source = str(ROOT / "examples" / "invoices.csv")
+        typed = ("--type", "amount:decimal", "--type", "due_date:date")
+        code, output, errors = self.call("import", "invoices", source, "--key", "invoice_id", *typed,
+                                         "--min", "amount:0.00", "--max", "due_date:2026-10-31")
+        self.assertEqual(code, 1, errors)
+        result = json.loads(output)
+        self.assertEqual((result["rules"]["minimum"], result["rules"]["maximum"]),
+                         ({"amount": "0"}, {"due_date": "2026-10-31"}))
+        _, output, _ = self.call("records", str(result["id"]), "--flagged")
+        self.assertEqual([(row["number"], row["failed_rules"]) for row in json.loads(output)], [
+            (3, {"amount": ["type"]}), (4, {"due_date": ["type"]}), (5, {"due_date": ["max"]}),
+            (6, {"amount": ["min"], "due_date": ["max"]})])
+        for args, message in ((("--min", "amount:1"), "value rules cannot change"),
+                              (("--min", "invoice_id:A"), "needs a column type"),
+                              (("--max", "amount:ten"), "must be a valid decimal"),
+                              (("--min", "amount:5", "--max", "amount:1"), "above its maximum")):
+            code, output, errors = self.call("import", "fresh" if "cannot" not in message else "invoices", source,
+                                             "--key", "invoice_id", *typed, *args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_summary_lists_each_versions_quality_and_changes(self):
         for fixture in ("suppliers-before.csv", "suppliers-after.csv", "suppliers-messy.csv"):
             self.import_example(fixture)
@@ -284,7 +306,7 @@ class CliTests(unittest.TestCase):
                          [(3, False), (2, True), (1, True)])
         self.assertEqual(summary["versions"][1]["changes"]["changed"], 1)
         self.assertEqual([(row["number"], row["invalid_columns"]) for row in demo["invalid_values"]],
-                         [(3, ["amount"]), (4, ["due_date"])])
+                         [(3, ["amount"]), (4, ["due_date"]), (6, ["amount"])])
         self.assertEqual([(row["number"], row["failed_rules"]) for row in demo["rule_failures"]], [
             (2, {"email": ["required"]}), (3, {"supplier_id": ["pattern"]}), (4, {"region": ["allowed"]})])
         self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",

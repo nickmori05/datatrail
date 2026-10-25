@@ -6,7 +6,7 @@ Datatrail is a small backend for investigating what changed between CSV
 exports of the same dataset. Each import is saved as a versioned snapshot with
 its exact original bytes and a row-level quality report. Rows with duplicate,
 missing or malformed keys, wrong column counts, empty required cells or values
-that fail declared column types, allowed values or patterns are kept and
+that fail declared column types, allowed values, patterns or ranges are kept and
 labelled instead of being dropped, and snapshots with flagged rows are never
 used for comparisons. Clean snapshots can be compared field by field, and any
 key can be traced back through every version to its source file and line, or
@@ -29,8 +29,8 @@ The demo imports the fictional files in `examples/` into a temporary database
 and prints the results as JSON. Two supplier exports differ by one moved, one
 removed and one added supplier. A third, messy export is flagged and left out
 of the comparison. An invoice file has an amount and a due date that fail
-their column types, and a contacts file has a missing email, a malformed
-supplier ID and an unexpected region.
+their column types and a negative amount below its minimum, and a contacts file
+has a missing email, a malformed supplier ID and an unexpected region.
 
 ## Usage
 
@@ -55,7 +55,7 @@ python3 -m datatrail records 3 --flagged
 python3 -m datatrail records 3 --issue duplicate_key
 python3 -m datatrail summary suppliers
 python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
-  --type amount:decimal --type due_date:date
+  --type amount:decimal --type due_date:date --min amount:0
 python3 -m datatrail records 4 --issue invalid_value
 python3 -m datatrail import contacts examples/contacts.csv --key contact_id \
   --required email --allow region:east --allow region:west \
@@ -97,6 +97,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | POST | `/datasets/{name}/imports?key=column&source_name=file.csv` | Upload raw CSV bytes |
 | POST | `/datasets/{name}/imports?key=column&type=amount:decimal` | Upload with column type checks |
 | POST | `/datasets/{name}/imports?key=column&required=email&allow=region:east` | Upload with value rules |
+| POST | `/datasets/{name}/imports?key=column&type=amount:decimal&min=amount:0` | Upload with a typed range |
 | GET | `/datasets` | List datasets |
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
 | GET | `/datasets/{name}/summary` | Quality and change counts for each version, newest first |
@@ -122,7 +123,7 @@ and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid CSV, column types or value rules |
+| `400` | Invalid CSV, column types, value rules or ranges |
 | `404` | Missing dataset, import or version |
 | `409` | Changed key column, column types or value rules, or a comparison involving flagged snapshots |
 | `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
@@ -211,6 +212,8 @@ repeatable on `import` and in the upload query string:
 | `--required COLUMN` | `required=COLUMN` | The cell is empty (`missing_value`) |
 | `--allow COLUMN:VALUE` | `allow=COLUMN:VALUE` | The cell is not one of the column's allowed values (`invalid_value`) |
 | `--pattern COLUMN:PATTERN` | `pattern=COLUMN:PATTERN` | The cell does not fully match the regular expression (`invalid_value`) |
+| `--min COLUMN:VALUE` | `min=COLUMN:VALUE` | The typed cell is less than `VALUE` (`invalid_value`) |
+| `--max COLUMN:VALUE` | `max=COLUMN:VALUE` | The typed cell is greater than `VALUE` (`invalid_value`) |
 
 - Each `--allow` adds one accepted value, so values may contain commas.
   Everything after the first colon is the value or pattern, so those may
@@ -220,19 +223,32 @@ repeatable on `import` and in the upload query string:
   are checked. Matching is exact and case-sensitive; use `(?i)` in a pattern to
   ignore case. Patterns use Python's `re` syntax and must match the whole value,
   so `S[0-9]{3}` accepts `S001` but not `S0011`. An invalid pattern is a `400`.
-- Like types, allowed values and patterns only check nonempty cells. Add
+- `--min` and `--max` set inclusive bounds on a column with an `integer`,
+  `decimal` or `date` type, declared on the same import or saved with the
+  dataset. Numbers compare by value, so `9.50` is below `10`, and dates compare
+  as calendar dates. A bound must be a valid value of the column's type (an
+  integer column takes `--min qty:1`, not `--min qty:1.5`), each column has at
+  most one of each, and a minimum cannot be above its maximum. Bounds are saved
+  in one spelling, so `0`, `+0` and `0.00` are the same rule and are shown as
+  `0`.
+- A value that fails its column type is reported as `type` only; ranges are
+  checked for values the type accepts.
+- Like types, allowed values, patterns and ranges only check nonempty cells. Add
   `--required` to also reject empty ones. The key column is always required, so
   naming it in `--required` is an error.
 - Rules combine with each other and with types. `records` lists each flagged
   row's failing columns in `invalid_columns` and the rules each one broke in
-  `failed_rules`, for example `{"qty": ["type"], "region": ["allowed"]}`.
+  `failed_rules`, for example `{"qty": ["type"], "region": ["allowed"],
+  "amount": ["min"]}`.
 
 Value rules are saved with the dataset on its first import and work like column
 types: later imports can leave them all out, or repeat the same set in any
 order. Changing, adding or dropping a rule is a conflict. `datasets`, `show` and
-import responses include `rules`. Databases created before value rules existed
+import responses include `rules`, with `minimum` and `maximum` mapping each
+bounded column to its bound. Databases created before value rules existed
 are upgraded in place on startup: their datasets have no rules, and rows that
-failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
+failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`. Datasets
+saved before ranges existed have no bounds.
 
 ## Investigating changes
 
@@ -354,7 +370,7 @@ from an imported value that already started with an apostrophe.
 | Module | Responsibility |
 | --- | --- |
 | `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
-| `datatrail/rules.py` | Column types and value rules, and the cells each one accepts |
+| `datatrail/rules.py` | Column types, value rules and ranges, and the cells each one accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
@@ -383,16 +399,16 @@ python3 -m venv .venv
 ```
 
 Tests use temporary databases and synthetic fixtures. They cover parsing edge
-cases, duplicate handling, value rules, source preservation, atomic rollback,
+cases, duplicate handling, value rules and ranges, source preservation, atomic rollback,
 concurrent retries and version allocation, schema upgrades, key history,
 dataset summaries (including randomized checks that their change counts match
 `diff`), pagination, CLI and API error paths, formula escaping, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
-port. It checks uploads, retries, quality, type and value rule checks, diffs,
-version lookups, key history, dataset summaries, plain and spreadsheet CSV
-exports, source downloads, CLI and API sharing one database, and persistence
+port. It checks uploads, retries, quality, type, value rule and range checks,
+diffs, version lookups, key history, dataset summaries, plain and spreadsheet
+CSV exports, source downloads, CLI and API sharing one database, and persistence
 across container recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
@@ -414,8 +430,10 @@ check.
   as one key removed and another added.
 - `history` only sees clean versions, so a value that changed and changed back
   inside flagged imports leaves no event; check `skipped_flagged`.
-- Column types cover integers, decimals and ISO dates only; there are no
-  numeric or date ranges, cross-column checks or locale-specific number formats.
+- Column types cover integers, decimals and ISO dates only. Ranges are fixed
+  bounds; there are no relative dates such as "not in the future",
+  cross-column checks (a due date after an issue date) or locale-specific
+  number formats.
   A dataset's key column, types and value rules cannot change; use a new dataset
   name.
 - Patterns run with Python's `re`, which has no time limit. A pattern with
