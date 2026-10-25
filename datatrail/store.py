@@ -218,11 +218,14 @@ class Store:
                     WHERE d.name = ? ORDER BY i.version DESC LIMIT ? OFFSET ?""", (dataset, limit, offset)
             )]
 
-    def summary(self, dataset: str, limit=100, offset=0) -> dict:
-        """A dataset's settings, version counts and a page of per-version quality and change counts, newest first."""
+    def summary(self, dataset: str, limit=100, offset=0, ignore=None) -> dict:
+        """A dataset's settings, version counts and a page of per-version quality and change counts, newest first.
+
+        Columns in `ignore` are left out of each version's schema and change counts.
+        """
         check_page(limit, offset)
         with closing(self.connect()) as connection:
-            return dataset_summary(connection, dataset, limit, offset)
+            return dataset_summary(connection, dataset, limit, offset, self._ignored(connection, dataset, ignore))
 
     def _dataset(self, connection, dataset: str):
         """Raise NotFound unless the dataset exists."""
