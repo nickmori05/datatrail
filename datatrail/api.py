@@ -22,6 +22,7 @@ CSV_RESPONSE = {200: {"content": {"text/csv": {"schema": {"type": "string"}}},
                       "description": "JSON by default; with format=csv, one row per changed field"}}
 Spreadsheet = Annotated[bool, Query(description="With format=csv, add a byte order mark and escape values that "
                                                  "spreadsheets would run as formulas")]
+IGNORE_HELP = "A column to leave out of the comparison, so changes only there do not count; repeatable"
 
 
 async def read_csv(request: Request) -> bytes:
@@ -144,8 +145,9 @@ def create_app(database: Path | None = None) -> FastAPI:
         return store.imports(dataset, limit, offset)
 
     @app.get("/datasets/{dataset}/summary")
-    def summary(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
-        return store.summary(dataset, limit, offset)
+    def summary(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
+                ignore: list[str] = Query(default=[], description=IGNORE_HELP)):
+        return store.summary(dataset, limit, offset, ignore)
 
     @app.get("/imports/{identifier}")
     def get_import(identifier: int):
@@ -172,34 +174,35 @@ def create_app(database: Path | None = None) -> FastAPI:
 
     @app.get("/datasets/{dataset}/history")
     def history(dataset: str, key: str = Query(min_length=1), limit: int = Query(default=100, ge=1, le=1000),
-                offset: int = Query(default=0, ge=0)):
-        return store.history(dataset, key, limit, offset)
+                offset: int = Query(default=0, ge=0), ignore: list[str] = Query(default=[], description=IGNORE_HELP)):
+        return store.history(dataset, key, limit, offset, ignore)
 
     @app.get("/datasets/{dataset}/changes", responses=CSV_RESPONSE)
     def changes(dataset: str, request: Request, limit: int = Query(default=100, ge=1, le=1000),
                 offset: int = Query(default=0, ge=0), kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),
                 since: int | None = Query(default=None, ge=1), until: int | None = Query(default=None, ge=1),
                 output: Literal["json", "csv"] = Query(default="json", alias="format"),
-                spreadsheet: Spreadsheet = False):
+                spreadsheet: Spreadsheet = False, ignore: list[str] = Query(default=[], description=IGNORE_HELP)):
         check_export(request, output, spreadsheet)
         if output == "json":
-            return store.latest_changes(dataset, limit, offset, kinds=kind, since=since, until=until)
+            return store.latest_changes(dataset, limit, offset, kinds=kind, since=since, until=until, ignore=ignore)
         selected = store.select_versions(dataset, since=since, until=until)
         before, after = selected["before_version"], selected["after_version"]
         skipped = ",".join(str(item["version"]) for item in selected["skipped_flagged"])
         headers = {"X-Datatrail-Before-Version": str(before), "X-Datatrail-After-Version": str(after),
                    "X-Datatrail-Skipped-Flagged": skipped}
-        return csv_response(store.diff_changes(selected["before_id"], selected["after_id"], kinds=kind),
+        return csv_response(store.diff_changes(selected["before_id"], selected["after_id"], kinds=kind, ignore=ignore),
                             f"{dataset}-v{before}-v{after}.csv", spreadsheet, headers)
 
     @app.get("/diff", responses=CSV_RESPONSE)
     def diff(before: int, after: int, request: Request, limit: int = Query(default=100, ge=1, le=1000),
              offset: int = Query(default=0, ge=0), kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),
-             output: Literal["json", "csv"] = Query(default="json", alias="format"), spreadsheet: Spreadsheet = False):
+             output: Literal["json", "csv"] = Query(default="json", alias="format"), spreadsheet: Spreadsheet = False,
+             ignore: list[str] = Query(default=[], description=IGNORE_HELP)):
         check_export(request, output, spreadsheet)
         if output == "json":
-            return store.diff(before, after, limit, offset, kinds=kind)
-        return csv_response(store.diff_changes(before, after, kinds=kind), f"diff-{before}-{after}.csv",
+            return store.diff(before, after, limit, offset, kinds=kind, ignore=ignore)
+        return csv_response(store.diff_changes(before, after, kinds=kind, ignore=ignore), f"diff-{before}-{after}.csv",
                             spreadsheet)
 
     return app

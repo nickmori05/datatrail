@@ -68,6 +68,10 @@ def parser():
         command.add_argument("--spreadsheet", action="store_true",
                              help="With --format csv, add a byte order mark and escape values that spreadsheets "
                                   "would run as formulas")
+    for command in (summary, history, diff, changes):
+        command.add_argument("--ignore", action="append", metavar="COLUMN",
+                             help="Leave COLUMN out of the comparison, so changes only there do not count; "
+                                  "repeatable")
     for command in (datasets, imports, summary, records, trace, history, diff, changes):
         # None means "not given", so a CSV export can reject explicit pagination.
         command.add_argument("--limit", type=int, help="Results per page, 1–1000 (default 100)")
@@ -80,10 +84,11 @@ def export(store, args):
     if args.limit is not None or args.offset is not None:
         raise InvalidInput("CSV exports include every change; leave out --limit and --offset.")
     if args.command == "diff":
-        changes = store.diff_changes(args.before, args.after, kinds=args.kind)
+        changes = store.diff_changes(args.before, args.after, kinds=args.kind, ignore=args.ignore)
     else:
         selected = store.select_versions(args.dataset, since=args.since, until=args.until)
-        changes = store.diff_changes(selected["before_id"], selected["after_id"], kinds=args.kind)
+        changes = store.diff_changes(selected["before_id"], selected["after_id"], kinds=args.kind,
+                                     ignore=args.ignore)
         if selected["skipped_flagged"]:
             versions = ", ".join(str(item["version"]) for item in selected["skipped_flagged"])
             print(f"Warning: comparing versions {selected['before_version']} and {selected['after_version']}; "
@@ -125,7 +130,7 @@ def main(argv=None):
         elif args.command == "imports":
             result = store.imports(args.dataset, args.limit, args.offset)
         elif args.command == "summary":
-            result = store.summary(args.dataset, args.limit, args.offset)
+            result = store.summary(args.dataset, args.limit, args.offset, ignore=args.ignore)
         elif args.command == "show":
             result = store.get_import(args.import_id)
         elif args.command == "records":
@@ -134,12 +139,13 @@ def main(argv=None):
         elif args.command == "trace":
             result = store.trace(args.dataset, args.key, args.limit, args.offset)
         elif args.command == "history":
-            result = store.history(args.dataset, args.key, args.limit, args.offset)
+            result = store.history(args.dataset, args.key, args.limit, args.offset, ignore=args.ignore)
         elif args.command == "changes":
             result = store.latest_changes(args.dataset, args.limit, args.offset, kinds=args.kind, since=args.since,
-                                          until=args.until)
+                                          until=args.until, ignore=args.ignore)
         else:
-            result = store.diff(args.before, args.after, args.limit, args.offset, kinds=args.kind)
+            result = store.diff(args.before, args.after, args.limit, args.offset, kinds=args.kind,
+                                ignore=args.ignore)
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return code
     except (InvalidInput, NotFound, Conflict, OSError, sqlite3.Error) as error:

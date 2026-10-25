@@ -12,6 +12,8 @@ used for comparisons. Clean snapshots can be compared field by field, and any
 key can be traced back through every version to its source file and line, or
 read as a history of when its values changed. A dataset summary shows, version
 by version, how many rows were flagged and why, and how many keys changed.
+Columns that change on every export, such as sync timestamps, can be left out
+of any comparison so they do not drown out real changes.
 It runs as a command-line tool (standard library only) or a FastAPI service,
 both backed by one SQLite file.
 
@@ -46,6 +48,7 @@ python3 -m datatrail diff 1 2
 python3 -m datatrail changes suppliers
 python3 -m datatrail changes suppliers --since 1
 python3 -m datatrail changes suppliers --until 2
+python3 -m datatrail changes suppliers --ignore city
 python3 -m datatrail changes suppliers --format csv > changes.csv
 python3 -m datatrail changes suppliers --format csv --spreadsheet > changes-for-excel.csv
 python3 -m datatrail trace suppliers S002
@@ -111,6 +114,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/datasets/{name}/changes?kind=added` | Compare the two newest clean snapshots |
 | GET | `/datasets/{name}/changes?since=1` | Compare a baseline version with the newest clean snapshot |
 | GET | `/datasets/{name}/changes?until=2` | Compare an end version with the newest clean snapshot before it |
+| GET | `/datasets/{name}/changes?ignore=synced_at` | Compare without a column; also on `/diff`, `history` and `summary` |
 | GET | `/diff?before=1&after=2&format=csv` | Download every change between two clean snapshots as CSV |
 | GET | `/datasets/{name}/changes?format=csv` | Download every change between chosen versions as CSV |
 | GET | `/datasets/{name}/changes?format=csv&spreadsheet=true` | Download the same CSV prepared for a spreadsheet |
@@ -123,7 +127,7 @@ and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid CSV, column types, value rules or ranges |
+| `400` | Invalid CSV, column types, value rules or ranges, or an unknown or key column in `ignore` |
 | `404` | Missing dataset, import or version |
 | `409` | Changed key column, column types or value rules, or a comparison involving flagged snapshots |
 | `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
@@ -311,6 +315,28 @@ saved before ranges existed have no bounds.
 Lists accept `--limit` (1–1,000, default 100) and `--offset`. Filters apply
 before pagination, and an empty page means there are no more results.
 
+### Ignoring columns
+
+Some exports rewrite a column on every run: a `synced_at` timestamp, an export
+batch number, an ETag. Every key then shows up as changed, and the real changes
+are lost among them. `--ignore COLUMN` (repeatable; `ignore=` in the API) on
+`diff`, `changes`, `history` and `summary` compares as if neither snapshot had
+that column:
+
+- A key whose only differences are in ignored columns counts as `unchanged`,
+  and `history` has no event for a version where only they changed.
+- Ignored columns are left out of `fields`, CSV export rows, `schema` (so
+  adding or dropping one is not a schema change) and `history`'s `latest`
+  record. Added and removed keys list their other fields.
+- Results include `ignored`, the trimmed, sorted and deduplicated columns, so
+  a saved result says what it left out.
+- Each column must appear in at least one version of the dataset, so a typo is
+  an error (`400`, exit 2) rather than silently ignoring nothing. The key column
+  cannot be ignored.
+- Ignoring is per request and changes no stored data. Imports, quality checks,
+  `trace`, `records` and `issue_counts` still see every column, so ignoring a
+  column never unflags a row that broke a rule in it.
+
 ## CSV exports
 
 `diff` and `changes` accept `--format csv` (`format=csv` in the API) to write
@@ -374,7 +400,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
-| `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store |
+| `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store, minus ignored columns |
 | `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
@@ -402,13 +428,13 @@ Tests use temporary databases and synthetic fixtures. They cover parsing edge
 cases, duplicate handling, value rules and ranges, source preservation, atomic rollback,
 concurrent retries and version allocation, schema upgrades, key history,
 dataset summaries (including randomized checks that their change counts match
-`diff`), pagination, CLI and API error paths, formula escaping, and the demo.
+`diff`, with and without ignored columns), pagination, CLI and API error paths, formula escaping, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality, type, value rule and range checks,
-diffs, version lookups, key history, dataset summaries, plain and spreadsheet
-CSV exports, source downloads, CLI and API sharing one database, and persistence
+diffs, version lookups, ignored columns, key history, dataset summaries, plain
+and spreadsheet CSV exports, source downloads, CLI and API sharing one database, and persistence
 across container recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
@@ -445,3 +471,8 @@ check.
   10,000-record snapshots, and up to about 0.15 s when the column order changes.
   A full page of 100 large versions can therefore take several seconds. It
   counts changes but does not list them; use `changes --until VERSION` for that.
+  With `--ignore`, a version where every record differs only in an ignored
+  column takes about 0.13 s, since each record is then compared field by field.
+- Ignored columns are chosen per request and cannot be saved with a dataset.
+  They are matched by exact name, so a column renamed between exports has to be
+  listed under both names.

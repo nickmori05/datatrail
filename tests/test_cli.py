@@ -255,6 +255,31 @@ class CliTests(unittest.TestCase):
         code, output, _ = self.call("diff", "1", "2", "--limit", "1")
         self.assertEqual((code, len(json.loads(output)["changes"])), (0, 1))
 
+    def test_ignore_option_leaves_columns_out_of_every_comparison(self):
+        for fixture in ("suppliers-before.csv", "suppliers-after.csv"):
+            self.import_example(fixture)
+        code, output, errors = self.call("changes", "suppliers", "--ignore", "city", "--ignore", "status")
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        self.assertEqual((result["ignored"], result["counts"]), (["city", "status"], {
+            "added": 1, "removed": 1, "changed": 0, "unchanged": 2}))
+        self.assertEqual(result["changes"][0]["fields"], {"name": {"before": "Elm Packaging", "after": None},
+                                                          "supplier_id": {"before": "S003", "after": None}})
+        _, output, _ = self.call("diff", "1", "2", "--ignore", "city", "--format", "csv")
+        rows = list(csv.reader(io.StringIO(output, newline="")))
+        self.assertEqual(sorted({(row[0], row[2]) for row in rows[1:]}), [
+            ("S003", "name"), ("S003", "status"), ("S003", "supplier_id"), ("S004", "name"), ("S004", "status"),
+            ("S004", "supplier_id")])
+        _, output, _ = self.call("history", "suppliers", "S002", "--ignore", "city")
+        self.assertEqual([event["kind"] for event in json.loads(output)["events"]], ["added"])
+        _, output, _ = self.call("summary", "suppliers", "--ignore", "city")
+        self.assertEqual(json.loads(output)["versions"][0]["changes"]["unchanged"], 2)
+        for args, message in ((("changes", "suppliers", "--ignore", "supplier_id"), "key column cannot be ignored"),
+                              (("summary", "suppliers", "--ignore", "town"), "Column 'town' is not in any version")):
+            code, output, errors = self.call(*args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+
     def test_csv_export_is_utf8_with_crlf_whatever_the_console_encoding(self):
         for name, content in (("before.csv", "id,name\nA,Ada\n"), ("after.csv", "id,name\nA,Zoë\n")):
             source = self.database.with_name(name)
@@ -301,6 +326,8 @@ class CliTests(unittest.TestCase):
         latest = demo["latest_changes"]
         self.assertEqual([item["version"] for item in latest["skipped_flagged"]], [3])
         self.assertEqual([change["key"] for change in latest["changes"]], ["S002"])
+        ignoring = demo["changes_ignoring_city"]
+        self.assertEqual((ignoring["ignored"], ignoring["counts"]["changed"]), (["city"], 0))
         summary = demo["supplier_summary"]
         self.assertEqual([(item["version"], item["clean"]) for item in summary["versions"]],
                          [(3, False), (2, True), (1, True)])

@@ -99,6 +99,9 @@ def main():
         until = request(base, f"/datasets/suppliers/changes?until={after['version']}")
         assert (until["before_id"], until["skipped_flagged"]) == (before["id"], []), until
         request(base, f"/datasets/suppliers/changes?until={messy['version']}", expected=409)
+        ignoring = request(base, "/datasets/suppliers/changes?ignore=city&ignore=status")
+        assert (ignoring["ignored"], ignoring["counts"]["changed"]) == (["city", "status"], 0), ignoring
+        request(base, "/datasets/suppliers/changes?ignore=supplier_id", expected=400)
         export = request(base, "/datasets/suppliers/changes?format=csv&kind=changed", raw=True).decode()
         assert export == ("key,kind,field,before,after,before_record,after_record\r\n"
                           "S002,changed,city,Boston,Chicago,2,2\r\n"), export
@@ -126,11 +129,14 @@ def main():
                                                      "unchanged": 1}, summary
         assert summary["versions"][0]["issue_counts"]["duplicate_key"] == 2, summary
         request(base, "/datasets/missing/summary", expected=404)
+        quiet = request(base, "/datasets/suppliers/summary?ignore=city")
+        assert quiet["versions"][1]["changes"]["changed"] == 0, quiet
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
             "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
         print("HTTP imports, retries, quality, type, value rule and range checks, diffs, plain and spreadsheet CSV "
-              "exports, latest changes, provenance, key history, dataset summaries and CLI reads passed.", flush=True)
+              "exports, latest changes, ignored columns, provenance, key history, dataset summaries and CLI reads "
+              "passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

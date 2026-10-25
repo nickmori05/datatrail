@@ -137,6 +137,30 @@ class ApiTests(unittest.TestCase):
         for params in ({}, {"key": ""}, {"key": "A", "limit": 0}, {"key": "A", "offset": -1}):
             self.assertEqual(self.client.get("/datasets/suppliers/history", params=params).status_code, 422, params)
 
+    def test_comparisons_accept_repeated_ignore_parameters(self):
+        before = self.upload(b"id,name,synced\nA,Ada,1\nB,Bob,1\n").json()
+        after = self.upload(b"id,name,synced\nA,Ada,2\nB,Bill,2\n").json()
+        ignore = {"ignore": ["synced", "synced"]}
+        diff = self.client.get("/diff", params={"before": before["id"], "after": after["id"], **ignore}).json()
+        self.assertEqual((diff["ignored"], diff["counts"]["changed"], diff["counts"]["unchanged"]), (["synced"], 1, 1))
+        changes = self.client.get("/datasets/suppliers/changes", params={"format": "csv", **ignore})
+        self.assertEqual(changes.text, "key,kind,field,before,after,before_record,after_record\r\n"
+                                       "B,changed,name,Bob,Bill,2,2\r\n")
+        history = self.client.get("/datasets/suppliers/history", params={"key": "A", **ignore}).json()
+        self.assertEqual([event["version"] for event in history["events"]], [1])
+        summary = self.client.get("/datasets/suppliers/summary", params=ignore).json()
+        self.assertEqual(summary["versions"][0]["changes"]["changed"], 1)
+        for path, params in (("/datasets/suppliers/summary", {"ignore": "id"}),
+                             ("/datasets/suppliers/changes", {"ignore": "missing"}),
+                             ("/datasets/suppliers/history", {"key": "A", "ignore": " "})):
+            with self.subTest(path=path, params=params):
+                self.assertEqual(self.client.get(path, params=params).status_code, 400)
+        self.assertEqual(self.client.get("/datasets/missing/summary", params={"ignore": "name"}).status_code, 404)
+        operations = self.client.get("/openapi.json").json()["paths"]
+        for path in ("/diff", "/datasets/{dataset}/changes", "/datasets/{dataset}/history",
+                     "/datasets/{dataset}/summary"):
+            self.assertIn("ignore", {item["name"] for item in operations[path]["get"]["parameters"]})
+
     def test_diff_and_changes_download_as_csv(self):
         before = self.upload(b"id,name\nA,Ada\nB,Bob\n").json()
         self.upload(b"id,name\nA,Ada\nA,Other\n")
