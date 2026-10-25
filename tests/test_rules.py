@@ -7,11 +7,11 @@ import unittest
 
 from datatrail.errors import Conflict, InvalidInput
 from datatrail.ingest import parse_csv
-from datatrail.rules import MAX_ALLOWED_VALUES, MAX_PATTERN_LENGTH, Checks, parse_rules, saved_rules
+from datatrail.rules import MAX_ALLOWED_VALUES, MAX_PATTERN_LENGTH, Checks, check_ranges, parse_rules, saved_rules
 from datatrail.store import Store
 
 
-EMPTY = {"required": [], "allowed": {}, "patterns": {}}
+EMPTY = {"required": [], "allowed": {}, "patterns": {}, "minimum": {}, "maximum": {}}
 
 
 class RuleSpecTests(unittest.TestCase):
@@ -20,7 +20,7 @@ class RuleSpecTests(unittest.TestCase):
                                                               "opens:09:00"], ["code:S[0-9]{3}", " email : .+@.+ "])
         self.assertEqual(rules, {"required": ["email", "status"],
                                  "allowed": {"opens": ["09:00"], "status": ["active", "paused"]},
-                                 "patterns": {"code": "S[0-9]{3}", "email": ".+@.+"}})
+                                 "patterns": {"code": "S[0-9]{3}", "email": ".+@.+"}, "minimum": {}, "maximum": {}})
         self.assertEqual(parse_rules(), EMPTY)
         self.assertEqual(saved_rules({}), EMPTY)
         self.assertEqual(saved_rules(rules), rules)
@@ -71,6 +71,62 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.checks.failures(self.row(qty="3")), {"qty": ["allowed"]})
         self.assertEqual(self.checks.failures(self.row(qty="x", email="", code="s001")),
                          {"code": ["pattern"], "email": ["required"], "qty": ["type", "allowed"]})
+
+
+class RangeTests(unittest.TestCase):
+    TYPES = {"due": "date", "price": "decimal", "qty": "integer"}
+
+    def ranges(self, minimum=(), maximum=(), types=TYPES):
+        return check_ranges(types, parse_rules(minimum=minimum, maximum=maximum))
+
+    def test_bounds_are_trimmed_and_saved_in_one_spelling(self):
+        rules = self.ranges([" price : 0.50 ", "qty:-0", "due:2026-01-01"], ["price:100.00", "qty:+003"])
+        self.assertEqual((rules["minimum"], rules["maximum"]), (
+            {"due": "2026-01-01", "price": "0.5", "qty": "0"}, {"price": "100", "qty": "3"}))
+        self.assertEqual(self.ranges(["price:0.000"])["minimum"], {"price": "0"})
+        self.assertEqual(self.ranges(["price:12."])["minimum"], {"price": "12"})
+        long = "1234567890" * 5 + ".500"
+        self.assertEqual(self.ranges(["price:" + long])["minimum"], {"price": long[:-2]})
+        self.assertEqual(self.ranges(), parse_rules())
+        self.assertEqual(check_ranges(self.TYPES, rules), rules)
+
+    def test_bounds_must_fit_the_column_type_and_order(self):
+        for minimum, maximum, message in (
+                (["name:a"], [], "Column 'name' needs a column type"),
+                ([], ["name:1"], "to have a maximum"),
+                (["qty:1.5"], [], "minimum for column 'qty' must be a valid integer, not '1.5'"),
+                (["price:1e3"], [], "valid decimal"),
+                ([], ["due:2026-02-30"], "maximum for column 'due' must be a valid date"),
+                (["price:10"], ["price:9.99"], "minimum for column 'price' is above its maximum"),
+                (["due:2026-02-01"], ["due:2026-01-31"], "above its maximum")):
+            with self.subTest(minimum=minimum, maximum=maximum), self.assertRaisesRegex(InvalidInput, message):
+                self.ranges(minimum, maximum)
+        for arguments, message in (({"minimum": "qty:1"}, "Minimum values must be a list"),
+                                   ({"maximum": ["qty"]}, "COLUMN:VALUE"),
+                                   ({"minimum": ["qty:1", "qty :2"]}, "more than one minimum")):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(InvalidInput, message):
+                parse_rules(**arguments)
+        self.assertEqual(self.ranges(["price:5"], ["price:5.0"])["maximum"], {"price": "5"})
+
+    def test_values_outside_a_range_fail_min_or_max(self):
+        rules = parse_rules(minimum=["qty:1", "price:-.5", "due:2026-01-01"], maximum=["qty:10", "due:2026-12-31"])
+        checks = Checks(self.TYPES, rules)
+        self.assertEqual(checks.columns, ["due", "price", "qty"])
+        for values, failed in (
+                ({"qty": "1", "price": "-0.50", "due": "2026-12-31"}, {}),
+                ({"qty": "+010", "price": "1e9", "due": ""}, {"price": ["type"]}),
+                ({"qty": "0", "price": "-0.51", "due": "2027-01-01"},
+                 {"due": ["max"], "price": ["min"], "qty": ["min"]}),
+                ({"qty": "11", "price": "", "due": "2025-12-31"}, {"due": ["min"], "qty": ["max"]}),
+                ({"qty": "x", "price": "99999999999999999999999999999999.5", "due": "2026-13-01"},
+                 {"due": ["type"], "qty": ["type"]})):
+            with self.subTest(values=values):
+                self.assertEqual(checks.failures(values), failed)
+        allowed = Checks({"qty": "integer"}, parse_rules([], ["qty:20", "qty:5"], minimum=["qty:10"]))
+        self.assertEqual(allowed.failures({"qty": "5"}), {"qty": ["min"]})
+        self.assertEqual(allowed.failures({"qty": "12"}), {"qty": ["allowed"]})
+        with self.assertRaisesRegex(InvalidInput, "needs a column type"):
+            Checks({}, parse_rules(minimum=["qty:1"]))
 
 
 class RuleParsingTests(unittest.TestCase):
@@ -158,6 +214,26 @@ class StoredRuleTests(unittest.TestCase):
         self.assertEqual(failed, [{"qty": ["allowed"]}, {"qty": ["required"]}])
         again = self.store.import_csv("orders", "id", b"id,qty\nA,\n", "orders.csv", ["qty:integer"])
         self.assertEqual(again["issue_counts"]["missing_value"], 1)
+
+    def test_ranges_flag_rows_and_are_fixed_like_other_rules(self):
+        content = b"id,amount,due\nA,10.00,2026-03-01\nB,-5,2026-03-01\nC,20,2027-01-01\nD,,\n"
+        result = self.store.import_csv("invoices", "id", content, "invoices.csv", ["amount:decimal", "due:date"],
+                                       minimum=["amount:0.00"], maximum=["due:2026-12-31"])
+        self.assertEqual(result["rules"]["minimum"], {"amount": "0"})
+        self.assertEqual(result["rules"]["maximum"], {"due": "2026-12-31"})
+        self.assertEqual((result["rejected_count"], result["issue_counts"]["invalid_value"]), (2, 2))
+        failed = [(row["number"], row["failed_rules"]) for row in self.store.records(result["id"], flagged=True)]
+        self.assertEqual(failed, [(2, {"amount": ["min"]}), (3, {"due": ["max"]})])
+        same = self.store.import_csv("invoices", "id", b"id,amount,due\nA,1,\n", "next.csv", minimum=["amount:+0"],
+                                     maximum=["due:2026-12-31"])
+        self.assertEqual(same["rejected_count"], 0)
+        saved = self.store.import_csv("invoices", "id", b"id,amount,due\nA,-1,\n", "again.csv")
+        self.assertEqual(self.store.records(saved["id"])[0]["failed_rules"], {"amount": ["min"]})
+        with self.assertRaisesRegex(Conflict, "value rules cannot change"):
+            self.store.import_csv("invoices", "id", b"id,amount,due\nA,1,\n", "next.csv", minimum=["amount:1"])
+        with self.assertRaisesRegex(InvalidInput, "needs a column type"):
+            self.store.import_csv("other", "id", content, "other.csv", minimum=["amount:0"])
+        self.assertEqual([item["name"] for item in self.store.datasets()], ["invoices"])
 
     def test_databases_created_before_value_rules_are_upgraded_in_place(self):
         legacy = self.database.with_name("legacy.sqlite3")

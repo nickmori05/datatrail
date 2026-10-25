@@ -104,7 +104,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1, errors)
         result = json.loads(output)
         self.assertEqual(result["rules"], {"required": ["email"], "allowed": {"region": ["east", "west"]},
-                                           "patterns": {"supplier_id": "S[0-9]{3}"}})
+                                           "patterns": {"supplier_id": "S[0-9]{3}"}, "minimum": {}, "maximum": {}})
         self.assertEqual((result["issue_counts"]["missing_value"], result["issue_counts"]["invalid_value"]), (1, 2))
         _, output, _ = self.call("records", str(result["id"]), "--flagged")
         self.assertEqual([(row["number"], row["issues"], row["failed_rules"]) for row in json.loads(output)], [
