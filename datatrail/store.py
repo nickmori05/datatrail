@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .compare import compare, iter_changes, key_history
+from .compare import compare, iter_changes, key_history, without
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import check_ranges, parse_column_types, parse_rules, saved_rules
@@ -229,6 +229,30 @@ class Store:
         if connection.execute("SELECT id FROM datasets WHERE name = ?", (dataset,)).fetchone() is None:
             raise NotFound(f"Dataset '{dataset}' does not exist.")
 
+    def _ignored(self, connection, dataset: str, ignore) -> list[str]:
+        """Check columns to leave out of a comparison and return them trimmed and sorted.
+
+        Each must appear in some version of the dataset, so a typo is an error rather than a no-op, and the key
+        column cannot be ignored, since it is what records are matched by. Raises NotFound for an unknown dataset.
+        """
+        row = connection.execute("SELECT id, key_column FROM datasets WHERE name = ?", (dataset,)).fetchone()
+        if row is None:
+            raise NotFound(f"Dataset '{dataset}' does not exist.")
+        if not ignore:
+            return []
+        if isinstance(ignore, str):
+            raise InvalidInput("Ignored columns must be a list.")
+        names = {name.strip() if isinstance(name, str) else "" for name in ignore}
+        if "" in names:
+            raise InvalidInput("Ignored columns must be nonempty column names.")
+        if row["key_column"] in names:
+            raise InvalidInput("The key column cannot be ignored; records are matched by it.")
+        known = {name for (headers,) in connection.execute(
+            "SELECT headers_json FROM imports WHERE dataset_id = ?", (row["id"],)) for name in json.loads(headers)}
+        for name in sorted(names - known):
+            raise InvalidInput(f"Column '{name}' is not in any version of dataset '{dataset}'.")
+        return sorted(names)
+
     def get_import(self, identifier: int) -> dict:
         """One import's details and quality counts."""
         with closing(self.connect()) as connection:
@@ -272,17 +296,18 @@ class Store:
                    LIMIT ? OFFSET ?""", (dataset, key, limit, offset)
             )]
 
-    def history(self, dataset: str, key: str, limit=100, offset=0) -> dict:
+    def history(self, dataset: str, key: str, limit=100, offset=0, ignore=None) -> dict:
         """How one exact normalized key's values changed across the dataset's clean versions, newest first.
 
         Flagged imports are not compared but are listed in `skipped_flagged` with the key's rows there, since
-        a value that changed in a flagged import only shows up in the next clean one.
+        a value that changed in a flagged import only shows up in the next clean one. Columns in `ignore` are
+        left out, so a version where only they changed has no event.
         """
         check_page(limit, offset)
         if not isinstance(key, str) or not key:
             raise InvalidInput("Key must be a nonempty string.")
         with closing(self.connect()) as connection:
-            self._dataset(connection, dataset)
+            ignored = self._ignored(connection, dataset, ignore)
             snapshots = [dict(row) for row in connection.execute(
                 """SELECT i.id, i.version, i.source_name, i.sha256, i.imported_at, i.rejected_count
                    FROM imports i JOIN datasets d ON d.id = i.dataset_id WHERE d.name = ? ORDER BY i.version""",
@@ -293,7 +318,7 @@ class Store:
                    WHERE d.name = ? AND r.entity_key = ? ORDER BY r.import_id, r.number""", (dataset, key)
             )]
         clean = [snapshot for snapshot in snapshots if not snapshot["rejected_count"]]
-        records = {row["import_id"]: row for row in rows if not row["issues"]}
+        records = {row["import_id"]: without(row, ignored) for row in rows if not row["issues"]}
         events = key_history(clean, records)[::-1]
         latest = None
         if clean and clean[-1]["id"] in records:
@@ -305,7 +330,7 @@ class Store:
                     "key_records": [{name: row[name] for name in ("number", "source_line", "issues")}
                                     for row in rows if row["import_id"] == snapshot["id"]]}
                    for snapshot in reversed(snapshots) if snapshot["rejected_count"]]
-        return {"dataset": dataset, "key": key, "clean_versions": len(clean),
+        return {"dataset": dataset, "key": key, "ignored": ignored, "clean_versions": len(clean),
                 "present_in": sum(snapshot["id"] in records for snapshot in clean), "latest": latest,
                 "skipped_flagged": skipped, "events": events[offset:offset + limit], "total_events": len(events),
                 "limit": limit, "offset": offset}
@@ -319,38 +344,45 @@ class Store:
             self._dataset(connection, dataset)
             return select_versions(connection, dataset, since, until)
 
-    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None) -> dict:
+    def latest_changes(self, dataset: str, limit=100, offset=0, kinds=None, since=None, until=None,
+                       ignore=None) -> dict:
         """Diff the clean snapshots chosen by `select_versions`, adding their versions and `skipped_flagged`."""
         check_page(limit, offset)
         kinds = change_kinds(kinds)
         selected = self.select_versions(dataset, since, until)
-        result = self.diff(selected["before_id"], selected["after_id"], limit, offset, kinds)
+        result = self.diff(selected["before_id"], selected["after_id"], limit, offset, kinds, ignore)
         return {"dataset": dataset, "before_version": selected["before_version"],
                 "after_version": selected["after_version"], "skipped_flagged": selected["skipped_flagged"], **result}
 
-    def diff(self, before_id: int, after_id: int, limit=100, offset=0, kinds=None) -> dict:
-        """Compare two clean imports of one dataset by key, with full counts and a page of field-level changes."""
+    def diff(self, before_id: int, after_id: int, limit=100, offset=0, kinds=None, ignore=None) -> dict:
+        """Compare two clean imports of one dataset by key, with full counts and a page of field-level changes.
+
+        Columns in `ignore` are left out of the counts, the changes and the schema.
+        """
         check_page(limit, offset)
         kinds = change_kinds(kinds)
-        before, after, old, new = self._snapshots(before_id, after_id)
+        before, after, old, new, ignored = self._snapshots(before_id, after_id, ignore)
         result = compare(old, new, kinds, limit, offset)
-        return {"before_id": before_id, "after_id": after_id, "counts": result["counts"],
-                "schema": {"added": sorted(set(after["headers"]) - set(before["headers"])),
-                           "removed": sorted(set(before["headers"]) - set(after["headers"]))},
+        headers = [set(item["headers"]) - set(ignored) for item in (before, after)]
+        return {"before_id": before_id, "after_id": after_id, "ignored": ignored, "counts": result["counts"],
+                "schema": {"added": sorted(headers[1] - headers[0]), "removed": sorted(headers[0] - headers[1])},
                 "kinds": kinds, "changes": result["changes"], "total_changes": result["total_changes"],
                 "limit": limit, "offset": offset}
 
-    def diff_changes(self, before_id: int, after_id: int, kinds=None) -> Iterator[dict]:
+    def diff_changes(self, before_id: int, after_id: int, kinds=None, ignore=None) -> Iterator[dict]:
         """Every change of the requested kinds between two clean imports, in key order, without pagination.
 
         Inputs are checked before this returns. Changes are built one key at a time as the result is consumed.
         """
         kinds = change_kinds(kinds)
-        _, _, old, new = self._snapshots(before_id, after_id)
+        _, _, old, new, _ = self._snapshots(before_id, after_id, ignore)
         return iter_changes(old, new, kinds)
 
-    def _snapshots(self, before_id: int, after_id: int) -> tuple[dict, dict, dict, dict]:
-        """Two clean imports of one dataset and their records by key, or a Conflict saying why not."""
+    def _snapshots(self, before_id: int, after_id: int, ignore=None) -> tuple[dict, dict, dict, dict, list[str]]:
+        """Two clean imports of one dataset, their records by key without ignored columns, and those columns.
+
+        Raises a Conflict saying why two imports cannot be compared.
+        """
         with closing(self.connect()) as connection:
             before = self._import(connection, before_id)
             after = self._import(connection, after_id)
@@ -358,8 +390,9 @@ class Store:
                 raise Conflict("Compare imports from the same dataset.")
             if before["rejected_count"] or after["rejected_count"]:
                 raise Conflict("Resolve flagged records and import a clean file before comparing snapshots.")
+            ignored = self._ignored(connection, before["dataset"], ignore)
             def load(identifier):
-                return {row["entity_key"]: record_dict(row) for row in connection.execute(
+                return {row["entity_key"]: without(record_dict(row), ignored) for row in connection.execute(
                     "SELECT * FROM records WHERE import_id = ?", (identifier,)
                 )}
-            return before, after, load(before_id), load(after_id)
+            return before, after, load(before_id), load(after_id), ignored

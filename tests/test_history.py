@@ -106,6 +106,22 @@ class HistoryTests(unittest.TestCase):
         event = self.store.history("suppliers", "A")["events"][0]
         self.assertEqual((event["kind"], event["fields"]), ("changed", {"city": {"before": None, "after": ""}}))
 
+    def test_ignored_columns_drop_events_where_only_they_changed(self):
+        self.ingest(b"id,name,seen\nA,Ada,1\n")
+        self.ingest(b"id,name,seen\nA,Ada,2\n")
+        self.ingest(b"id,name,seen\nA,Ada Lovelace,3\n")
+        full = self.store.history("suppliers", "A")
+        self.assertEqual([event["version"] for event in full["events"]], [3, 2, 1])
+        result = self.store.history("suppliers", "A", ignore=["seen"])
+        self.assertEqual(result["ignored"], ["seen"])
+        self.assertEqual([(event["version"], event["previous_version"]) for event in result["events"]],
+                         [(3, 2), (1, None)])
+        self.assertEqual(result["events"][0]["fields"], {"name": {"before": "Ada", "after": "Ada Lovelace"}})
+        self.assertEqual(result["latest"]["data"], {"id": "A", "name": "Ada Lovelace"})
+        for ignore in (["id"], ["missing"]):
+            with self.subTest(ignore=ignore), self.assertRaises(InvalidInput):
+                self.store.history("suppliers", "A", ignore=ignore)
+
     def test_history_rejects_missing_datasets_empty_keys_and_bad_pages(self):
         with self.assertRaises(NotFound):
             self.store.history("missing", "A")

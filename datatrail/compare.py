@@ -3,6 +3,13 @@
 from collections.abc import Iterator
 
 
+def without(record: dict, ignored) -> dict:
+    """A record whose data leaves out the ignored columns, so they can neither change nor be listed."""
+    if not ignored or record["data"] is None:
+        return record
+    return {**record, "data": {name: value for name, value in record["data"].items() if name not in ignored}}
+
+
 def changed_fields(before: dict | None, after: dict | None) -> dict:
     """Fields whose values differ, by name. A field missing on one side is None there; an empty one is ""."""
     before, after = before or {}, after or {}

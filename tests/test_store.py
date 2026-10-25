@@ -212,6 +212,44 @@ class StoreTests(unittest.TestCase):
             with self.assertRaisesRegex(InvalidInput, "Change kinds"):
                 self.store.diff(before["id"], after["id"], kinds=kinds)
 
+    def test_ignored_columns_are_left_out_of_counts_changes_and_schema(self):
+        before = self.ingest(b"id,name,synced_at,etag\nA,Ada,2026-01-01,x1\nB,Bob,2026-01-01,x2\nC,Cam,2026-01-01,x3\n")
+        after = self.ingest(b"id,name,synced_at,batch\nA,Ada,2026-02-01,7\nB,Bill,2026-02-01,7\nD,Dee,2026-02-01,7\n")
+        full = self.store.diff(before["id"], after["id"])
+        self.assertEqual((full["ignored"], full["counts"]["changed"]), ([], 2))
+        diff = self.store.diff(before["id"], after["id"], ignore=[" synced_at", "batch", "etag", "batch"])
+        self.assertEqual(diff["ignored"], ["batch", "etag", "synced_at"])
+        self.assertEqual(diff["counts"], {"added": 1, "removed": 1, "changed": 1, "unchanged": 1})
+        self.assertEqual(diff["schema"], {"added": [], "removed": []})
+        self.assertEqual([(change["key"], change["kind"], change["fields"]) for change in diff["changes"]], [
+            ("B", "changed", {"name": {"before": "Bob", "after": "Bill"}}),
+            ("C", "removed", {"id": {"before": "C", "after": None}, "name": {"before": "Cam", "after": None}}),
+            ("D", "added", {"id": {"before": None, "after": "D"}, "name": {"before": None, "after": "Dee"}})])
+        partial = self.store.diff(before["id"], after["id"], ignore=["synced_at"])
+        self.assertEqual((partial["counts"]["changed"], partial["schema"]),
+                         (2, {"added": ["batch"], "removed": ["etag"]}))
+        noisy = ["synced_at", "batch", "etag"]
+        exported = list(self.store.diff_changes(before["id"], after["id"], kinds=["changed"], ignore=noisy))
+        self.assertEqual(exported, diff["changes"][:1])
+        latest = self.store.latest_changes("suppliers", kinds=["changed"], ignore=noisy)
+        self.assertEqual((latest["ignored"], latest["changes"]), (diff["ignored"], diff["changes"][:1]))
+
+    def test_ignored_columns_must_exist_in_the_dataset_and_cannot_be_the_key(self):
+        before = self.ingest(b"id,name\nA,Ada\n")
+        after = self.ingest(b"id,name,city\nA,Ada,Reno\n")
+        self.ingest(b"id,name\nA,Ada\n", dataset="other")
+        self.ingest(b"id,name\nA,Ada Lovelace\n", dataset="other")
+        self.assertEqual(self.store.diff(before["id"], after["id"], ignore=["city"])["counts"]["unchanged"], 1)
+        for ignore, message in ((["id"], "key column cannot be ignored"), (["town"], "Column 'town' is not in any"),
+                                ([" "], "nonempty column names"), ([None], "nonempty column names"),
+                                ("city", "must be a list")):
+            with self.subTest(ignore=ignore), self.assertRaisesRegex(InvalidInput, message):
+                self.store.diff(before["id"], after["id"], ignore=ignore)
+        with self.assertRaisesRegex(InvalidInput, "not in any version of dataset 'other'"):
+            self.store.latest_changes("other", ignore=["city"])
+        with self.assertRaises(NotFound):
+            self.store.latest_changes("missing", ignore=["city"])
+
     def test_latest_changes_compares_newest_clean_snapshots_and_reports_skipped_flags(self):
         self.ingest(b"id,name\nA,Ada\n")
         before = self.ingest(b"id,name\nA,Ada\nB,Bob\n")
