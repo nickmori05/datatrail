@@ -10,8 +10,9 @@ import unittest
 from unittest.mock import patch
 
 from datatrail.compare import merge_by_key
-from datatrail.errors import Conflict
+from datatrail.errors import Conflict, InvalidInput
 from datatrail.export import csv_chunks
+from datatrail.ingest import MAX_ROWS, parse_csv
 from datatrail.store import Store
 from datatrail.summary import change_counts
 
@@ -130,3 +131,13 @@ class StreamingDiffTests(unittest.TestCase):
             for before, after in ((clean, flagged), (clean, other)):
                 with self.subTest(after=after["id"]), self.assertRaises(Conflict):
                     self.store.diff_changes(before["id"], after["id"])
+
+
+class RecordLimitTests(unittest.TestCase):
+    def test_files_up_to_the_record_limit_are_accepted(self):
+        self.assertEqual(MAX_ROWS, 50_000)
+        content = csv_bytes(["id"], [[f"K{key}"] for key in range(MAX_ROWS)])
+        _, rows = parse_csv(content, "id")
+        self.assertEqual(len(rows), MAX_ROWS)
+        with self.assertRaisesRegex(InvalidInput, "at most 50000 data records"):
+            parse_csv(content + b"extra\n", "id")
