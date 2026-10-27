@@ -10,7 +10,7 @@ from .rules import Checks, saved_rules
 
 
 MAX_BYTES = 5 * 1024 * 1024
-MAX_ROWS = 10_000
+MAX_ROWS = 50_000
 MAX_COLUMNS = 64
 ISSUE_CODES = ("column_count", "missing_key", "duplicate_key", "invalid_value", "missing_value")
 
