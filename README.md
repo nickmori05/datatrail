@@ -53,6 +53,7 @@ python3 -m datatrail history suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
 python3 -m datatrail records 3 --issue duplicate_key
+python3 -m datatrail records 3 --flagged --format csv > flagged.csv
 python3 -m datatrail summary suppliers
 python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
   --type amount:decimal --type due_date:date
@@ -263,7 +264,8 @@ failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
   Rows that break a type or value rule list the failing columns and rules in
   `invalid_columns` and `failed_rules`.
   `--flagged` lists only flagged rows, and `--issue CODE` (repeatable) only rows
-  with any of those codes.
+  with any of those codes. `--format csv` writes every listed row as CSV; see
+  [Flagged record exports](#flagged-record-exports).
 - `trace DATASET KEY` finds an exact normalized key in every version, newest
   first, including flagged duplicates.
 - `history DATASET KEY` turns the same exact key into a timeline of the clean
@@ -354,6 +356,30 @@ matches a plain CSV export. `--spreadsheet` without `--format csv` is an error
 that reads the file programmatically. An escaped value cannot be told apart
 from an imported value that already started with an apostrophe.
 
+### Flagged record exports
+
+`records ID --format csv` writes every row that `records` would list, with the
+same `--flagged` and `--issue` filters, as one CSV file. It is meant for
+sending a broken export back to whoever produced it: each row says what is
+wrong and shows the cells exactly as they were in the file.
+
+| Column | Value |
+| --- | --- |
+| `record`, `line` | The record number and the line it starts on in the source file |
+| `issues` | Issue codes separated by spaces, for example `duplicate_key invalid_value` |
+| `failed_rules` | The columns that broke a type or value rule and the rules each broke, as compact JSON such as `{"email":["required"]}`; empty when none did |
+| The import's columns | The original, untrimmed cells, under the file's own header |
+
+A row with more cells than the header (`column_count`) keeps its extra cells in
+trailing columns with blank names, and a row with fewer is padded with empty
+cells, so every row has the same width. Rows follow source order. Header row,
+encoding, line endings and the ban on `--limit` and `--offset` are as for change
+exports. `--spreadsheet` escapes formula-like original cells and column names
+the same way, which matters most here: these are exactly the rows nobody has
+checked yet. Rows are read from SQLite 1,000 at a time while the file is
+written. If the file has its own `record`, `line`, `issues` or
+`failed_rules` column, both appear under that name; use column positions.
+
 ## Design
 
 | Module | Responsibility |
@@ -364,7 +390,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
 | `datatrail/compare.py` | Key-by-key comparison of two snapshots' records, read in key order |
-| `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
+| `datatrail/export.py` | CSV rows for a comparison or flagged records, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
