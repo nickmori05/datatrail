@@ -62,6 +62,7 @@ python3 -m datatrail import contacts examples/contacts.csv --key contact_id \
   --required email --allow region:east --allow region:west \
   --pattern 'supplier_id:S[0-9]{3}'
 python3 -m datatrail records 5 --flagged
+python3 -m datatrail records 5 --column region
 ```
 
 The IDs above assume a fresh database; use the IDs your imports return. Every
@@ -104,6 +105,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect flagged rows |
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
+| GET | `/imports/{id}/records?column=email&rule=required` | Inspect rows that broke a rule, or a rule in one column |
 | GET | `/imports/{id}/records?flagged=true&format=csv` | Download every flagged row with its issues and original cells as CSV |
 | GET | `/imports/{id}/source` | Download the exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized key |
@@ -124,7 +126,7 @@ and `issue_counts` in the response. Lists and diffs accept `limit` and `offset`.
 
 | Status | Meaning |
 | --- | --- |
-| `400` | Invalid CSV, column types or value rules |
+| `400` | Invalid CSV, column types or value rules, or a record filter naming a column the import does not have |
 | `404` | Missing dataset, import or version |
 | `409` | Changed key column, column types or value rules, or a comparison involving flagged snapshots |
 | `413` | Upload larger than 5 MiB, checked while streaming even without a reliable Content-Length |
@@ -267,6 +269,19 @@ failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
   `--flagged` lists only flagged rows, and `--issue CODE` (repeatable) only rows
   with any of those codes. `--format csv` writes every listed row as CSV; see
   [Flagged record exports](#flagged-record-exports).
+  `--column COLUMN` and `--rule RULE` (both repeatable; `column=` and `rule=` in
+  the API) narrow the list to rows that broke a type or value rule.
+  `--column region` lists rows that broke any rule in `region`,
+  `--rule required` rows with an empty required cell in any column, and both
+  together rows that broke one of the rules in one of the columns, so
+  `--column qty --rule allowed` skips a row whose `qty` only failed its type.
+  Rules are `type`, `required`, `allowed` and `pattern`, the names
+  `failed_rules` uses. A column that is not in the import's header is an error
+  rather than an empty list, since it is almost always a typo. This is the
+  drill-down for the summary's `invalid_columns`: when it shows
+  `{"email": 2}`, `records ID --column email` lists those two rows. Duplicate
+  keys, missing keys and wrong column counts break no value rule, so these
+  filters leave them out; use `--issue` for those.
 - `trace DATASET KEY` finds an exact normalized key in every version, newest
   first, including flagged duplicates.
 - `history DATASET KEY` turns the same exact key into a timeline of the clean
@@ -421,16 +436,17 @@ concurrent retries and version allocation, schema upgrades, key history,
 dataset summaries (including randomized checks that their change counts match
 `diff`), batched comparisons (randomized checks against a whole-snapshot
 comparison, key order for non-ASCII keys, flat memory and no lock held between
-batches), pagination, CLI and API error paths, formula escaping, flagged record exports,
-and the demo.
+batches), pagination, CLI and API error paths, formula escaping, flagged record
+exports, record filters by column and rule (checked against a reference for
+every combination), and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
-port. It checks uploads, retries, quality, type and value rule checks, diffs,
-version lookups, key history, dataset summaries, plain and spreadsheet CSV
-exports, a 30,000-record CSV export, a flagged record export, source
-downloads, CLI and API sharing one database, and persistence across container
-recreation, then removes everything it created.
+port. It checks uploads, retries, quality, type and value rule checks, record
+filters by column and rule, diffs, version lookups, key history, dataset
+summaries, plain and spreadsheet CSV exports, a 30,000-record CSV export, a
+flagged record export, source downloads, CLI and API sharing one database, and
+persistence across container recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.

@@ -90,6 +90,11 @@ def main():
         failed = request(base, f"/imports/{contacts['id']}/records?flagged=true")
         assert [row["failed_rules"] for row in failed] == [{"email": ["required"]}, {"supplier_id": ["pattern"]},
                                                            {"region": ["allowed"]}], failed
+        region = request(base, f"/imports/{contacts['id']}/records?column=region")
+        assert [row["number"] for row in region] == [4], region
+        both = request(base, f"/imports/{contacts['id']}/records?column=email&column=supplier_id&rule=pattern")
+        assert [row["number"] for row in both] == [3], both
+        request(base, f"/imports/{contacts['id']}/records?column=regoin", expected=400)
         request(base, "/datasets/contacts/imports?key=contact_id&required=region", contact_bytes, expected=409)
         request(base, "/datasets/other/imports?key=contact_id&pattern=email:(", contact_bytes, expected=400)
         request(base, f"/diff?before={before['id']}&after={messy['id']}", expected=409)
@@ -141,9 +146,9 @@ def main():
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
             "bulk": 2, "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality, type and value rule checks, diffs, plain, spreadsheet, large and "
-              "flagged record CSV exports, latest changes, provenance, key history, dataset summaries and CLI reads "
-              "passed.", flush=True)
+        print("HTTP imports, retries, quality, type and value rule checks, rule filters, diffs, plain, spreadsheet, "
+              "large and flagged record CSV exports, latest changes, provenance, key history, dataset summaries and "
+              "CLI reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

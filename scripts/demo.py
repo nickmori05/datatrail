@@ -45,11 +45,12 @@ def main():
                        "--allow", "region:east", "--allow", "region:west", "--pattern", "supplier_id:S[0-9]{3}",
                        expected=1)
         failures = cli("records", str(contacts["id"]), "--flagged")
+        region_failures = cli("records", str(contacts["id"]), "--column", "region")
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
                           "supplier_trail": trail, "supplier_history": history, "latest_changes": latest,
                           "supplier_summary": summary,
                           "invalid_values": invalid, "rule_failures": failures, "changes_csv": export,
-                          "flagged_csv": flagged_csv}, indent=2))
+                          "flagged_csv": flagged_csv, "region_failures": region_failures}, indent=2))
 
 
 if __name__ == "__main__":
