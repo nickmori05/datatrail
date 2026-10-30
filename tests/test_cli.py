@@ -321,6 +321,9 @@ class CliTests(unittest.TestCase):
                          [(3, ["amount"]), (4, ["due_date"])])
         self.assertEqual([(row["number"], row["failed_rules"]) for row in demo["rule_failures"]], [
             (2, {"email": ["required"]}), (3, {"supplier_id": ["pattern"]}), (4, {"region": ["allowed"]})])
+        self.assertEqual([row[:3] for row in demo["flagged_csv"]], [
+            ["record", "line", "issues"], ["2", "3", "duplicate_key"], ["3", "4", "duplicate_key"],
+            ["4", "5", "missing_key"], ["5", "6", "column_count"]])
         self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",
                                                     "after_record"], ["S002", "changed", "city", "Boston", "Chicago",
                                                                       "2", "2"]])

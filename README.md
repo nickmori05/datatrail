@@ -104,6 +104,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect flagged rows |
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
+| GET | `/imports/{id}/records?flagged=true&format=csv` | Download every flagged row with its issues and original cells as CSV |
 | GET | `/imports/{id}/source` | Download the exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized key |
 | GET | `/datasets/{name}/history?key=value` | Show when one key was added, changed or removed |
@@ -358,8 +359,9 @@ from an imported value that already started with an apostrophe.
 
 ### Flagged record exports
 
-`records ID --format csv` writes every row that `records` would list, with the
-same `--flagged` and `--issue` filters, as one CSV file. It is meant for
+`records ID --format csv` (`format=csv` on `/imports/{id}/records`) writes every
+row that `records` would list, with the same `--flagged` and `--issue` filters
+(`flagged=` and `issue=` in the API), as one CSV file. It is meant for
 sending a broken export back to whoever produced it: each row says what is
 wrong and shows the cells exactly as they were in the file.
 
@@ -377,7 +379,7 @@ encoding, line endings and the ban on `--limit` and `--offset` are as for change
 exports. `--spreadsheet` escapes formula-like original cells and column names
 the same way, which matters most here: these are exactly the rows nobody has
 checked yet. Rows are read from SQLite 1,000 at a time while the file is
-written. If the file has its own `record`, `line`, `issues` or
+written. API downloads are named `import-3-records.csv`. If the file has its own `record`, `line`, `issues` or
 `failed_rules` column, both appear under that name; use column positions.
 
 ## Design
@@ -419,15 +421,16 @@ concurrent retries and version allocation, schema upgrades, key history,
 dataset summaries (including randomized checks that their change counts match
 `diff`), batched comparisons (randomized checks against a whole-snapshot
 comparison, key order for non-ASCII keys, flat memory and no lock held between
-batches), pagination, CLI and API error paths, formula escaping, and the demo.
+batches), pagination, CLI and API error paths, formula escaping, flagged record exports,
+and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality, type and value rule checks, diffs,
 version lookups, key history, dataset summaries, plain and spreadsheet CSV
-exports, a 30,000-record CSV export, source downloads, CLI and API sharing one
-database, and persistence across container recreation, then removes everything
-it created.
+exports, a 30,000-record CSV export, a flagged record export, source
+downloads, CLI and API sharing one database, and persistence across container
+recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.
