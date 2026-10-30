@@ -30,14 +30,15 @@ class SummaryTestCase(unittest.TestCase):
     def ingest(self, content, dataset="suppliers", **rules):
         return self.store.import_csv(dataset, "id", content, "feed.csv", None, **rules)
 
-    def counts(self, before, after):
+    def counts(self, before, after, ignored=()):
         with closing(self.store.connect()) as connection:
-            return change_counts(connection, before["id"], after["id"])
+            return change_counts(connection, before["id"], after["id"], ignored)
 
 
 class ChangeCountTests(SummaryTestCase):
-    def assertMatchesDiff(self, before, after):
-        self.assertEqual(self.counts(before, after), self.store.diff(before["id"], after["id"])["counts"])
+    def assertMatchesDiff(self, before, after, ignored=()):
+        self.assertEqual(self.counts(before, after, ignored),
+                         self.store.diff(before["id"], after["id"], ignore=list(ignored))["counts"])
 
     def test_counts_match_diff_for_schema_order_and_empty_value_changes(self):
         pairs = (
@@ -68,6 +69,25 @@ class ChangeCountTests(SummaryTestCase):
                     imports.append(self.ingest(csv_bytes(headers, rows), f"random{number}"))
                 if imports[0]["id"] != imports[1]["id"]:
                     self.assertMatchesDiff(*imports)
+                    columns = sorted({*imports[0]["headers"], *imports[1]["headers"]} - {"id"})
+                    ignored = generator.sample(columns, generator.randint(0, len(columns)))
+                    with self.subTest(ignored=ignored):
+                        self.assertMatchesDiff(*imports, ignored=sorted(ignored))
+
+    def test_counts_skip_ignored_fields_on_either_side(self):
+        pairs = (
+            (b"id,a,t\nK1,1,x\nK2,2,x\n", b"id,a,t\nK1,1,y\nK2,3,y\n", ["t"]),
+            (b"id,a\nK1,1\n", b"id,a,t\nK1,1,\n", ["t"]),
+            (b"id,a,t\nK1,1,x\n", b"id,a\nK1,1\n", ["t"]),
+            (b"id,a,t,u\nK1,1,x,y\n", b"id,u,a,t\nK1,z,1,w\n", ["t", "u"]),
+            (b'id,a,t\nK1,1,"{""x"": 1}"\n', b'id,t,a\nK1,"{""x"": 2}",1\n', ["t"]),
+        )
+        for number, (old, new, ignored) in enumerate(pairs):
+            with self.subTest(pair=number):
+                dataset = f"ignored{number}"
+                before, after = self.ingest(old, dataset), self.ingest(new, dataset)
+                self.assertMatchesDiff(before, after, ignored)
+                self.assertNotEqual(self.counts(before, after), self.counts(before, after, ignored))
 
 
 class DatasetSummaryTests(SummaryTestCase):
@@ -109,6 +129,23 @@ class DatasetSummaryTests(SummaryTestCase):
         self.assertEqual({key for key in latest} - {"schema", "changes", "clean", "issue_counts", "invalid_columns"},
                          {"id", "version", "source_name", "sha256", "imported_at", "row_count", "accepted_count",
                           "rejected_count"})
+
+    def test_ignored_columns_are_left_out_of_schema_and_change_counts(self):
+        summary = self.store.summary("suppliers", ignore=["phone", " region"])
+        self.assertEqual(summary["ignored"], ["phone", "region"])
+        latest, flagged, second, _ = summary["versions"]
+        self.assertEqual(latest["schema"], {"previous_version": 3, "added": [], "removed": []})
+        self.assertEqual(latest["changes"], {"compared_with": 2, "added": 0, "removed": 1, "changed": 0,
+                                             "unchanged": 2})
+        self.assertEqual(second["changes"], {"compared_with": 1, "added": 1, "removed": 0, "changed": 0,
+                                             "unchanged": 2})
+        self.assertEqual(flagged["invalid_columns"], {"email": 2, "region": 1})
+        self.assertEqual(self.store.summary("suppliers")["ignored"], [])
+        for ignore in (["id"], ["fax"], "phone"):
+            with self.subTest(ignore=ignore), self.assertRaises(InvalidInput):
+                self.store.summary("suppliers", ignore=ignore)
+        with self.assertRaises(NotFound):
+            self.store.summary("missing", ignore=["phone"])
 
     def test_pages_compare_with_versions_outside_the_page(self):
         page = self.store.summary("suppliers", limit=1, offset=0)
