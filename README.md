@@ -157,7 +157,7 @@ local one.
 ## Import rules
 
 - UTF-8 CSV with an optional BOM, comma delimiter and standard quoting.
-- At most 5 MiB, 10,000 data records and 64 columns. Column names must be
+- At most 5 MiB, 50,000 data records and 64 columns. Column names must be
   nonempty, unique after trimming and at most 128 characters. Very large fields
   also hit Python's CSV field size limit.
 - Header and cell whitespace is trimmed for comparison; the original bytes and
@@ -302,7 +302,9 @@ saved before ranges existed have no bounds.
   after values with the original record numbers, and added or removed columns.
   A missing field is `null`; an empty one is `""`. Column and row order do not
   matter. `--kind added|removed|changed` (repeatable) lists only those changes;
-  the counts still cover every key.
+  the counts still cover every key. Both imports are read from SQLite in key
+  order, 1,000 records at a time, so a comparison holds at most a batch from
+  each side and the requested page, however large the snapshots are.
 - `changes DATASET` runs the same comparison by version instead of import ID.
   By default it compares the two newest clean snapshots. `--since VERSION` picks
   the older side and `--until VERSION` the newer side; with only one of them, the
@@ -356,13 +358,16 @@ removed key the reverse. Rows follow key order, then field name. `--kind`
 filters rows as it does for JSON. Exports are never paginated, so `--limit` or
 `--offset` with `--format csv` is an error (`422` in the API).
 
-The CSV has a header row, UTF-8 text without a byte order mark, standard
-quoting and CRLF line endings. The CLI writes it as UTF-8 bytes even when the
-terminal uses another encoding. It has no counts or schema summary; use JSON for
-those. A missing field and an empty value are both written as an empty cell;
-JSON keeps them apart (`null` versus `""`). For `changes`, the CLI prints the
-compared versions and any skipped flagged versions to stderr, and the API sends
-them as `X-Datatrail-Before-Version`, `X-Datatrail-After-Version` and
+The CSV has a header row, UTF-8 text without a byte order mark, standard quoting
+and CRLF line endings. The CLI writes it as UTF-8 bytes even when the terminal
+uses another encoding. It has no counts or schema summary; use JSON for those. A
+missing field and an empty value are both written as an empty cell; JSON keeps
+them apart (`null` versus `""`). Records are read in the same batches as `diff`
+while the file is written, so memory stays flat for any snapshot size. Each
+batch is a separate short query, so a slow download does not hold a database
+lock that would make imports wait. For `changes`, the CLI prints the compared
+versions and any skipped flagged versions to stderr, and the API sends them as
+`X-Datatrail-Before-Version`, `X-Datatrail-After-Version` and
 `X-Datatrail-Skipped-Flagged` (comma-separated, empty when none). API downloads
 are streamed as attachments named `diff-1-2.csv` or `suppliers-v1-v2.csv`.
 
@@ -400,7 +405,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
-| `datatrail/compare.py` | Key-by-key comparison of snapshots already loaded from the store, minus ignored columns |
+| `datatrail/compare.py` | Key-by-key comparison of two snapshots' records, read in key order, minus ignored columns |
 | `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
@@ -428,14 +433,18 @@ Tests use temporary databases and synthetic fixtures. They cover parsing edge
 cases, duplicate handling, value rules and ranges, source preservation, atomic rollback,
 concurrent retries and version allocation, schema upgrades, key history,
 dataset summaries (including randomized checks that their change counts match
-`diff`, with and without ignored columns), pagination, CLI and API error paths, formula escaping, and the demo.
+`diff`, with and without ignored columns), batched comparisons (randomized
+checks against a whole-snapshot comparison, key order for non-ASCII keys, flat
+memory and no lock held between batches), pagination, CLI and API error paths,
+formula escaping, and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality, type, value rule and range checks,
 diffs, version lookups, ignored columns, key history, dataset summaries, plain
-and spreadsheet CSV exports, source downloads, CLI and API sharing one database, and persistence
-across container recreation, then removes everything it created.
+and spreadsheet CSV exports, a 30,000-record CSV export, source downloads, CLI
+and API sharing one database, and persistence across container recreation,
+then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.
@@ -444,10 +453,12 @@ check.
 
 - Built for one trusted local workspace: no authentication, users or
   per-user isolation. Keep the API bound to localhost.
-- Snapshots are bounded (5 MiB, 10,000 records) and compared in memory. CSV
-  exports stream their output but still load both snapshots first. There is no
-  background queue, retention policy or migration framework beyond the additive
-  upgrade on startup.
+- Snapshots are bounded (5 MiB, 50,000 records). Comparisons and exports read
+  records in batches, but an import still parses the whole file in memory before
+  writing it; a 50,000-record file with ten columns took the process to about
+  120 MiB. A JSON `diff` still reads every record to count changes, even for a
+  small page. There is no background queue, retention policy or migration
+  framework beyond the additive upgrade on startup.
 - CSV exports cannot tell a missing field from an empty one. Formula escaping
   is opt-in and covers the leading characters spreadsheets commonly treat as
   formulas; other programs may have rules of their own.
@@ -468,8 +479,9 @@ check.
 - Versions reflect import order, not dates inside the files.
 - `summary` recomputes every count on each request. Change counts run in SQLite
   without loading snapshots into Python, at roughly 15 ms per version for
-  10,000-record snapshots, and up to about 0.15 s when the column order changes.
-  A full page of 100 large versions can therefore take several seconds. It
+  10,000-record snapshots and 45 ms for 50,000, and up to about 0.15 s and 0.5 s
+  when the column order changes. A full page of 100 large versions can therefore
+  take from several seconds to most of a minute; use a smaller `--limit`. It
   counts changes but does not list them; use `changes --until VERSION` for that.
   With `--ignore`, a version where every record differs only in an ignored
   column takes about 0.13 s, since each record is then compared field by field.

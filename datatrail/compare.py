@@ -1,6 +1,6 @@
-"""Compare loaded snapshots by key without touching storage."""
+"""Compare snapshots by key without touching storage."""
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 
 def without(record: dict, ignored) -> dict:
@@ -32,16 +32,34 @@ def change_entry(key: str, kind: str, left: dict | None, right: dict | None) -> 
             "before_record": left["number"] if left else None, "after_record": right["number"] if right else None}
 
 
-def compare(old: dict, new: dict, kinds: list[str], limit: int, offset: int) -> dict:
-    """Count every key's change kind and list one page of the requested kinds, in key order.
+def merge_by_key(old: Iterable[tuple[str, dict]], new: Iterable[tuple[str, dict]]) -> Iterator[tuple]:
+    """Pair two snapshots' records by key, in key order: (key, old record or None, new record or None).
 
-    `old` and `new` map each key to its record in a clean snapshot.
+    Each side yields (key, record) with keys strictly increasing, so only one record per side is held at a time.
+    """
+    old, new = iter(old), iter(new)
+    left, right = next(old, None), next(new, None)
+    while left is not None or right is not None:
+        if right is None or (left is not None and left[0] < right[0]):
+            yield left[0], left[1], None
+            left = next(old, None)
+        elif left is None or right[0] < left[0]:
+            yield right[0], None, right[1]
+            right = next(new, None)
+        else:
+            yield left[0], left[1], right[1]
+            left, right = next(old, None), next(new, None)
+
+
+def compare(pairs: Iterable[tuple], kinds: list[str], limit: int, offset: int) -> dict:
+    """Count every key's change kind and list one page of the requested kinds.
+
+    `pairs` come from `merge_by_key`, so only the page is kept in memory.
     """
     counts = {"added": 0, "removed": 0, "changed": 0, "unchanged": 0}
     changes = []
     total = 0
-    for key in sorted(old.keys() | new.keys()):
-        left, right = old.get(key), new.get(key)
+    for key, left, right in pairs:
         kind = change_kind(left, right)
         counts[kind] += 1
         if kind not in kinds:
@@ -52,10 +70,9 @@ def compare(old: dict, new: dict, kinds: list[str], limit: int, offset: int) -> 
     return {"counts": counts, "changes": changes, "total_changes": total}
 
 
-def iter_changes(old: dict, new: dict, kinds: list[str]) -> Iterator[dict]:
-    """Yield every change of the requested kinds in key order, building each one only when it is reached."""
-    for key in sorted(old.keys() | new.keys()):
-        left, right = old.get(key), new.get(key)
+def iter_changes(pairs: Iterable[tuple], kinds: list[str]) -> Iterator[dict]:
+    """Yield every change of the requested kinds in the order of `pairs`, building each one only when it is reached."""
+    for key, left, right in pairs:
         kind = change_kind(left, right)
         if kind in kinds:
             yield change_entry(key, kind, left, right)

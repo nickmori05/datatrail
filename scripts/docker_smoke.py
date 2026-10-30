@@ -114,6 +114,15 @@ def main():
                          "N1,changed,note,ok,\"'=HYPERLINK(\"\"http://example.invalid\"\")\",1,1\r\n"
                          "N2,changed,note,-5,Zo\u00eb,2,2\r\n").encode(), sheet
         request(base, "/datasets/notes/changes?spreadsheet=true", expected=422)
+        # Above the old 10,000-record limit, and many read batches long.
+        bulk, rows = "/datasets/bulk/imports?key=id", 30_000
+        for flip in (0, 1):
+            content = "id,v\n" + "".join(f"K{key:05d},{'b' if flip and key % 2 else 'a'}\n" for key in range(rows))
+            assert request(base, bulk, content.encode(), expected=201)["row_count"] == rows
+        large = request(base, "/datasets/bulk/changes?format=csv", raw=True).decode().splitlines()
+        assert (len(large), large[1], large[-1]) == (1 + rows // 2, "K00001,changed,v,a,b,2,2",
+                                                     f"K{rows - 1:05d},changed,v,a,b,{rows},{rows}"), large[:2]
+        assert request(base, "/datasets/bulk/changes")["counts"]["unchanged"] == rows // 2
         request(base, f"/diff?before={before['id']}&after={messy['id']}&format=csv", expected=409)
         trail = request(base, "/datasets/suppliers/trace?key=S002")
         assert [row["version"] for row in trail] == [3, 3, 2, 1], trail
@@ -133,10 +142,10 @@ def main():
         assert quiet["versions"][1]["changes"]["changed"] == 0, quiet
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
-            "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality, type, value rule and range checks, diffs, plain and spreadsheet CSV "
-              "exports, latest changes, ignored columns, provenance, key history, dataset summaries and CLI reads "
-              "passed.", flush=True)
+            "bulk": 2, "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
+        print("HTTP imports, retries, quality, type, value rule and range checks, diffs, plain, spreadsheet and "
+              "large CSV exports, latest changes, ignored columns, provenance, key history, dataset summaries and CLI "
+              "reads passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

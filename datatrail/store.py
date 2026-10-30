@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .compare import compare, iter_changes, key_history, without
+from .compare import compare, iter_changes, key_history, merge_by_key, without
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import check_ranges, parse_column_types, parse_rules, saved_rules
@@ -20,6 +20,8 @@ from .versions import select_versions
 
 CHANGE_KINDS = ("added", "removed", "changed")
 DEFAULT_DATABASE = ".local/datatrail.sqlite3"
+# Records read per query when comparing snapshots, which bounds the memory a diff or export needs.
+RECORD_BATCH = 1000
 IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, d.column_types_json, d.rules_json, i.version,
     i.source_name, i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
 # Columns added after the first release. Older databases gain them, with their defaults, on startup. The
@@ -364,8 +366,8 @@ class Store:
         """
         check_page(limit, offset)
         kinds = change_kinds(kinds)
-        before, after, old, new, ignored = self._snapshots(before_id, after_id, ignore)
-        result = compare(old, new, kinds, limit, offset)
+        before, after, ignored = self._comparable(before_id, after_id, ignore)
+        result = compare(self._pairs(before_id, after_id, ignored), kinds, limit, offset)
         headers = [set(item["headers"]) - set(ignored) for item in (before, after)]
         return {"before_id": before_id, "after_id": after_id, "ignored": ignored, "counts": result["counts"],
                 "schema": {"added": sorted(headers[1] - headers[0]), "removed": sorted(headers[0] - headers[1])},
@@ -375,17 +377,15 @@ class Store:
     def diff_changes(self, before_id: int, after_id: int, kinds=None, ignore=None) -> Iterator[dict]:
         """Every change of the requested kinds between two clean imports, in key order, without pagination.
 
-        Inputs are checked before this returns. Changes are built one key at a time as the result is consumed.
+        Inputs are checked before this returns. Records are read in batches as the result is consumed.
         """
         kinds = change_kinds(kinds)
-        _, _, old, new, _ = self._snapshots(before_id, after_id, ignore)
-        return iter_changes(old, new, kinds)
+        _, _, ignored = self._comparable(before_id, after_id, ignore)
+        return iter_changes(self._pairs(before_id, after_id, ignored), kinds)
 
-    def _snapshots(self, before_id: int, after_id: int, ignore=None) -> tuple[dict, dict, dict, dict, list[str]]:
-        """Two clean imports of one dataset, their records by key without ignored columns, and those columns.
-
-        Raises a Conflict saying why two imports cannot be compared.
-        """
+    def _comparable(self, before_id: int, after_id: int, ignore=None) -> tuple[dict, dict, list[str]]:
+        """Two clean imports of one dataset and the checked columns to ignore, or a Conflict saying why they
+        cannot be compared."""
         with closing(self.connect()) as connection:
             before = self._import(connection, before_id)
             after = self._import(connection, after_id)
@@ -394,8 +394,29 @@ class Store:
             if before["rejected_count"] or after["rejected_count"]:
                 raise Conflict("Resolve flagged records and import a clean file before comparing snapshots.")
             ignored = self._ignored(connection, before["dataset"], ignore)
-            def load(identifier):
-                return {row["entity_key"]: without(record_dict(row), ignored) for row in connection.execute(
-                    "SELECT * FROM records WHERE import_id = ?", (identifier,)
-                )}
-            return before, after, load(before_id), load(after_id), ignored
+        return before, after, ignored
+
+    def _pairs(self, before_id: int, after_id: int, ignored=()) -> Iterator[tuple]:
+        """Both imports' clean records without ignored columns, paired by key in key order, as `merge_by_key`
+        yields them."""
+        return merge_by_key(self._clean_records(before_id, ignored), self._clean_records(after_id, ignored))
+
+    def _clean_records(self, identifier: int, ignored=()) -> Iterator[tuple[str, dict]]:
+        """An import's clean records as (key, record) in key order, read RECORD_BATCH rows at a time.
+
+        Each batch uses its own short connection, so a slow reader holds no lock between batches and the
+        iterator can be resumed from another thread. Imports never change, so batches cannot drift.
+        """
+        after = ""
+        while True:
+            with closing(self.connect()) as connection:
+                rows = connection.execute(
+                    """SELECT number, entity_key, data_json FROM records
+                       WHERE import_id = ? AND issue_count = 0 AND entity_key > ? ORDER BY entity_key LIMIT ?""",
+                    (identifier, after, RECORD_BATCH)).fetchall()
+            for row in rows:
+                yield row["entity_key"], without({"number": row["number"], "data": json.loads(row["data_json"])},
+                                                 ignored)
+            if len(rows) < RECORD_BATCH:
+                return
+            after = rows[-1]["entity_key"]
