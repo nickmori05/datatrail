@@ -14,6 +14,7 @@ from . import __version__
 from .errors import Conflict, InvalidInput, NotFound
 from .export import csv_chunks, record_columns, record_rows, table_chunks
 from .ingest import ISSUE_CODES, MAX_BYTES
+from .rules import RULE_NAMES
 from .store import CHANGE_KINDS, Store, default_database
 
 
@@ -152,12 +153,18 @@ def create_app(database: Path | None = None) -> FastAPI:
     def records(identifier: int, request: Request, flagged: bool = False,
                 limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
                 issue: list[Literal[ISSUE_CODES]] = Query(default=[]),
+                column: list[str] = Query(default=[], description="Only rows that broke a type or value rule in "
+                                                                   "this column; repeatable"),
+                rule: list[Literal[RULE_NAMES]] = Query(default=[], description="Only rows that broke this rule, "
+                                                                                "in any listed column; repeatable"),
                 output: Literal["json", "csv"] = Query(default="json", alias="format"),
                 spreadsheet: Spreadsheet = False):
         check_export(request, output, spreadsheet, "record")
         if output == "json":
-            return store.records(identifier, flagged=flagged, issues=issue, limit=limit, offset=offset)
-        headers, width, rows = store.record_export(identifier, flagged=flagged, issues=issue)
+            return store.records(identifier, flagged=flagged, issues=issue, columns=column, rules=rule, limit=limit,
+                                 offset=offset)
+        headers, width, rows = store.record_export(identifier, flagged=flagged, issues=issue, columns=column,
+                                                   rules=rule)
         return csv_response(table_chunks(record_columns(headers, width), record_rows(rows, width), spreadsheet),
                             f"import-{identifier}-records.csv")
 

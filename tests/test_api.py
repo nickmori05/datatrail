@@ -275,6 +275,30 @@ class ApiTests(unittest.TestCase):
         self.assertIn("text/csv", operation["responses"]["200"]["content"])
         self.assertTrue({"format", "spreadsheet"} <= {item["name"] for item in operation["parameters"]})
 
+    def test_records_filter_by_repeated_column_and_rule_parameters(self):
+        result = self.upload(b"id,qty,region\nA,1,east\nB,two,east\nC,3,north\nD,x,south\n", type="qty:integer",
+                             allow=["region:east", "region:west"]).json()
+        path = f"/imports/{result['id']}/records"
+        for params, expected in (({"column": "qty"}, [2, 4]), ({"rule": "allowed"}, [3, 4]),
+                                 ({"column": ["qty", "region"], "rule": "type"}, [2, 4]),
+                                 ({"column": "qty", "rule": "allowed"}, []),
+                                 ({"column": " region ", "limit": 1, "offset": 1}, [4])):
+            response = self.client.get(path, params=params)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([row["number"] for row in response.json()], expected, params)
+        export = self.client.get(path, params={"column": "region", "rule": "allowed", "format": "csv"})
+        self.assertEqual(export.text.splitlines()[1:], ['3,4,invalid_value,"{""region"":[""allowed""]}",C,3,north',
+                                                        '4,5,invalid_value,"{""qty"":[""type""],""region"":'
+                                                        '[""allowed""]}",D,x,south'])
+        for params, status in (({"column": "regoin"}, 400), ({"column": ""}, 400), ({"rule": "range"}, 422),
+                               ({"column": "regoin", "format": "csv"}, 400)):
+            response = self.client.get(path, params=params)
+            self.assertEqual(response.status_code, status, params)
+            self.assertNotIn("text/csv", response.headers["content-type"])
+        self.assertEqual(self.client.get("/imports/999/records", params={"column": "qty"}).status_code, 404)
+        operation = self.client.get("/openapi.json").json()["paths"]["/imports/{identifier}/records"]["get"]
+        self.assertTrue({"column", "rule"} <= {item["name"] for item in operation["parameters"]})
+
     def test_bad_encoding_csv_and_dataset_names_are_rejected_without_imports(self):
         for content in (b"name\nAda", b"id,name\nA,\xff", b'id,name\nA,"unfinished'):
             with self.subTest(content=content):
