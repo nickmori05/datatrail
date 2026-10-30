@@ -257,6 +257,30 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, output), (2, ""))
         self.assertIn("does not exist", errors)
 
+    def test_records_column_and_rule_options_list_rows_that_broke_them(self):
+        source = str(ROOT / "examples" / "contacts.csv")
+        _, output, _ = self.call("import", "contacts", source, "--key", "contact_id", "--required", "email",
+                                 "--allow", "region:east", "--allow", "region:west", "--pattern",
+                                 "supplier_id:S[0-9]{3}")
+        identifier = str(json.loads(output)["id"])
+        for args, expected in ((("--column", "region"), [4]), (("--rule", "required"), [2]),
+                               (("--column", "email", "--column", "supplier_id"), [2, 3]),
+                               (("--column", "region", "--rule", "pattern"), []),
+                               (("--rule", "allowed", "--rule", "pattern", "--limit", "1"), [3])):
+            with self.subTest(args=args):
+                code, output, errors = self.call("records", identifier, *args)
+                self.assertEqual(code, 0, errors)
+                self.assertEqual([row["number"] for row in json.loads(output)], expected)
+        code, output, errors = self.call("records", identifier, "--column", "email", "--format", "csv")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(output.splitlines()[1:], ['2,3,missing_value,"{""email"":[""required""]}",C02,S002,,east'])
+        code, output, errors = self.call("records", identifier, "--column", "regoin")
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("Column 'regoin' is not one of this import's columns", errors)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            main(["--database", str(self.database), "records", identifier, "--rule", "range"])
+        self.assertEqual(error.exception.code, 2)
+
     def test_rule_failures_export_as_compact_json(self):
         source = str(ROOT / "examples" / "contacts.csv")
         _, output, _ = self.call("import", "contacts", source, "--key", "contact_id", "--required", "email",

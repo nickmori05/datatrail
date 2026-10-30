@@ -62,6 +62,7 @@ python3 -m datatrail import contacts examples/contacts.csv --key contact_id \
   --required email --allow region:east --allow region:west \
   --pattern 'supplier_id:S[0-9]{3}'
 python3 -m datatrail records 5 --flagged
+python3 -m datatrail records 5 --column region
 ```
 
 The IDs above assume a fresh database; use the IDs your imports return. Every
@@ -267,6 +268,18 @@ failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
   `--flagged` lists only flagged rows, and `--issue CODE` (repeatable) only rows
   with any of those codes. `--format csv` writes every listed row as CSV; see
   [Flagged record exports](#flagged-record-exports).
+  `--column COLUMN` and `--rule RULE` (both repeatable) narrow the list to rows
+  that broke a type or value rule. `--column region` lists rows that broke any
+  rule in `region`, `--rule required` rows with an empty required cell in any
+  column, and both together rows that broke one of the rules in one of the
+  columns, so `--column qty --rule allowed` skips a row whose `qty` only failed
+  its type. Rules are `type`, `required`, `allowed` and `pattern`, the names
+  `failed_rules` uses. A column that is not in the import's header is an error
+  rather than an empty list, since it is almost always a typo. This is the
+  drill-down for the summary's `invalid_columns`: when it shows
+  `{"email": 2}`, `records ID --column email` lists those two rows. Duplicate
+  keys, missing keys and wrong column counts break no value rule, so these
+  filters leave them out; use `--issue` for those.
 - `trace DATASET KEY` finds an exact normalized key in every version, newest
   first, including flagged duplicates.
 - `history DATASET KEY` turns the same exact key into a timeline of the clean

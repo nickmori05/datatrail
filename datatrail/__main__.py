@@ -9,6 +9,7 @@ import sys
 from .errors import Conflict, InvalidInput, NotFound
 from .export import csv_chunks, record_columns, record_rows, table_chunks
 from .ingest import ISSUE_CODES, MAX_BYTES
+from .rules import RULE_NAMES
 from .store import CHANGE_KINDS, Store, default_database
 
 
@@ -43,6 +44,10 @@ def parser():
     records.add_argument("--flagged", action="store_true")
     records.add_argument("--issue", action="append", choices=ISSUE_CODES,
                          help="Only list flagged rows with this issue code; repeatable")
+    records.add_argument("--column", action="append", dest="columns", metavar="COLUMN",
+                         help="Only list rows that broke a type or value rule in COLUMN; repeatable")
+    records.add_argument("--rule", action="append", dest="rules", choices=RULE_NAMES,
+                         help="Only list rows that broke this rule, in any listed column; repeatable")
     records.add_argument("--format", choices=("json", "csv"), default="json",
                          help="csv writes every listed record with its issues, failed rules and original cells")
     trace = commands.add_parser("trace", help="Trace an exact normalized key through snapshots")
@@ -80,7 +85,8 @@ def export(store, args):
         noun = "record" if args.command == "records" else "change"
         raise InvalidInput(f"CSV exports include every {noun}; leave out --limit and --offset.")
     if args.command == "records":
-        headers, width, records = store.record_export(args.import_id, flagged=args.flagged, issues=args.issue)
+        headers, width, records = store.record_export(args.import_id, flagged=args.flagged, issues=args.issue,
+                                                      columns=args.columns, rules=args.rules)
         write(table_chunks(record_columns(headers, width), record_rows(records, width), args.spreadsheet))
         return
     if args.command == "diff":
@@ -137,8 +143,8 @@ def main(argv=None):
         elif args.command == "show":
             result = store.get_import(args.import_id)
         elif args.command == "records":
-            result = store.records(args.import_id, flagged=args.flagged, issues=args.issue, limit=args.limit,
-                                   offset=args.offset)
+            result = store.records(args.import_id, flagged=args.flagged, issues=args.issue, columns=args.columns,
+                                   rules=args.rules, limit=args.limit, offset=args.offset)
         elif args.command == "trace":
             result = store.trace(args.dataset, args.key, args.limit, args.offset)
         elif args.command == "history":

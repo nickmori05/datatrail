@@ -13,7 +13,7 @@ import sqlite3
 from .compare import compare, iter_changes, key_history, merge_by_key
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
-from .rules import parse_column_types, parse_rules, saved_rules
+from .rules import RULE_NAMES, parse_column_types, parse_rules, saved_rules
 from .summary import dataset_summary
 from .versions import select_versions
 
@@ -64,17 +64,59 @@ def issue_codes(codes) -> list[str]:
     return [code for code in ISSUE_CODES if code in codes]
 
 
-def record_filter(flagged=False, issues=None) -> tuple[str, list]:
-    """SQL conditions and parameters that keep flagged records, or those with any of the given issue codes."""
+def record_filter(flagged=False, issues=None, columns=None, rules=None) -> tuple[str, list]:
+    """SQL conditions and parameters that keep the records `records` lists for these filters.
+
+    `issues` keeps records with any of those issue codes. `columns` and `rules` keep records that broke a rule
+    in one of the columns, one of the rules in any column, or with both, one of the rules in one of the columns.
+    Any filter keeps only flagged records. Columns must already be checked against the import's headers.
+    """
     issues = issue_codes(issues or [])
-    if not (flagged or issues):
+    rules = rule_names(rules or [])
+    columns = columns or []
+    if not (flagged or issues or columns or rules):
         return "", []
-    condition = "AND issue_count > 0"
+    condition, params = "AND issue_count > 0", []
     if issues:
         # Rows matching any requested code are listed once, in source order.
-        marks = ", ".join("?" * len(issues))
-        condition += f" AND EXISTS (SELECT 1 FROM json_each(issues_json) WHERE value IN ({marks}))"
-    return condition, issues
+        condition += f" AND EXISTS (SELECT 1 FROM json_each(issues_json) WHERE value IN ({marks(issues)}))"
+        params += issues
+    if columns or rules:
+        # failed_rules_json maps each failing column to the rules it broke, so a row matches when one entry does.
+        clauses = []
+        if columns:
+            clauses.append(f"failed.key IN ({marks(columns)})")
+            params += columns
+        if rules:
+            clauses.append(f"EXISTS (SELECT 1 FROM json_each(failed.value) WHERE value IN ({marks(rules)}))")
+            params += rules
+        condition += f" AND EXISTS (SELECT 1 FROM json_each(failed_rules_json) failed WHERE {' AND '.join(clauses)})"
+    return condition, params
+
+
+def marks(values) -> str:
+    """One SQL placeholder per value, separated by commas."""
+    return ", ".join("?" * len(values))
+
+
+def rule_names(names) -> list[str]:
+    """Validate requested rule names and return them in the order `failed_rules` reports them."""
+    if any(name not in RULE_NAMES for name in names):
+        raise InvalidInput(f"Rules must be one of {', '.join(RULE_NAMES)}.")
+    return [name for name in RULE_NAMES if name in names]
+
+
+def filter_columns(columns, headers: list[str]) -> list[str]:
+    """Trim requested column names and check each is one of the import's columns, so a typo is not an empty list."""
+    if isinstance(columns, str):
+        raise InvalidInput("Columns must be a list of names.")
+    names = sorted({column.strip() if isinstance(column, str) else column for column in columns or []})
+    for name in names:
+        if not isinstance(name, str) or not name:
+            raise InvalidInput("Column names must be nonempty strings.")
+        if name not in headers:
+            raise InvalidInput(f"Column '{name}' is not one of this import's columns.")
+    return names
 
 
 def import_dict(row) -> dict:
@@ -246,26 +288,27 @@ class Store:
         with closing(self.connect()) as connection:
             return self._import(connection, identifier)
 
-    def records(self, identifier: int, *, flagged=False, issues=None, limit=100, offset=0) -> list[dict]:
-        """An import's records in source order, optionally only flagged ones or those with given issue codes."""
+    def records(self, identifier: int, *, flagged=False, issues=None, columns=None, rules=None, limit=100,
+                offset=0) -> list[dict]:
+        """An import's records in source order, optionally only flagged ones, those with given issue codes, or
+        those that broke given rules or rules in given columns (see `record_filter`)."""
         check_page(limit, offset)
-        condition, params = record_filter(flagged, issues)
         with closing(self.connect()) as connection:
-            self._import(connection, identifier)
+            _, condition, params = self._record_filter(connection, identifier, flagged, issues, columns, rules)
             return [record_dict(row) for row in connection.execute(
                 f"SELECT * FROM records WHERE import_id = ? {condition} ORDER BY number LIMIT ? OFFSET ?",
                 (identifier, *params, limit, offset))]
 
-    def record_export(self, identifier: int, *, flagged=False, issues=None) -> tuple[list[str], int, Iterator[dict]]:
+    def record_export(self, identifier: int, *, flagged=False, issues=None, columns=None,
+                      rules=None) -> tuple[list[str], int, Iterator[dict]]:
         """Every record `records` would list with these filters, for a CSV export, without pagination.
 
         Returns the import's headers, the most cells any listed record has (at least the header's width) and
         the records in source order. Inputs are checked before this returns; records are then read
         RECORD_BATCH at a time as the iterator is consumed, each batch on its own short connection.
         """
-        condition, params = record_filter(flagged, issues)
         with closing(self.connect()) as connection:
-            headers = self._import(connection, identifier)["headers"]
+            headers, condition, params = self._record_filter(connection, identifier, flagged, issues, columns, rules)
             widest = connection.execute(
                 f"SELECT MAX(json_array_length(raw_json)) FROM records WHERE import_id = ? {condition}",
                 (identifier, *params)).fetchone()[0]
@@ -283,6 +326,14 @@ class Store:
                 after = rows[-1]["number"]
 
         return headers, max(len(headers), widest or 0), batches()
+
+    def _record_filter(self, connection, identifier, flagged, issues, columns, rules) -> tuple[list[str], str, list]:
+        """The import's headers and the checked `record_filter` for its records, or NotFound."""
+        issue_codes(issues or [])
+        rule_names(rules or [])
+        headers = self._import(connection, identifier)["headers"]
+        condition, params = record_filter(flagged, issues, filter_columns(columns, headers), rules)
+        return headers, condition, params
 
     def source(self, identifier: int) -> bytes:
         """The exact bytes that were imported."""
