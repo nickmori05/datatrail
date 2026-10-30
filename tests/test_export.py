@@ -6,7 +6,15 @@ import unittest
 from unittest.mock import patch
 
 from datatrail.errors import Conflict, InvalidInput, NotFound
-from datatrail.export import CSV_COLUMNS, change_rows, csv_chunks, escape_formula
+from datatrail.export import (
+    CSV_COLUMNS,
+    change_rows,
+    csv_chunks,
+    escape_formula,
+    record_columns,
+    record_rows,
+    table_chunks,
+)
 from datatrail.store import Store
 
 
@@ -81,6 +89,68 @@ class CsvTests(unittest.TestCase):
             chunks = list(csv_chunks(changes(), spreadsheet=True))
         self.assertGreater(len(chunks), 5)
         self.assertEqual(["\ufeff" in chunk for chunk in chunks], [True] + [False] * (len(chunks) - 1))
+
+
+    def test_record_rows_put_issues_and_failed_rules_before_the_original_cells(self):
+        records = [
+            {"number": 1, "source_line": 2, "issues": ["duplicate_key", "invalid_value"],
+             "failed_rules": {"qty": ["type"], "région": ["allowed", "pattern"]}, "raw": [" A ", "two", "nord"]},
+            {"number": 2, "source_line": 4, "issues": ["column_count"], "failed_rules": {}, "raw": ["B"]},
+            {"number": 3, "source_line": 5, "issues": [], "failed_rules": {}, "raw": ["C", "1", "", "extra"]},
+        ]
+        self.assertEqual(record_columns(["id", "qty", "région"], 4),
+                         ["record", "line", "issues", "failed_rules", "id", "qty", "région", ""])
+        self.assertEqual(list(record_rows(records, 4)), [
+            [1, 2, "duplicate_key invalid_value", '{"qty":["type"],"région":["allowed","pattern"]}', " A ", "two",
+             "nord", ""],
+            [2, 4, "column_count", "", "B", "", "", ""],
+            [3, 5, "", "", "C", "1", "", "extra"]])
+
+    def test_spreadsheet_tables_escape_column_names_and_cells(self):
+        text = "".join(table_chunks(["record", "=name"], [[1, "-SUM(A1)"], [2, "-5"]], spreadsheet=True))
+        self.assertEqual(text, "\ufeffrecord,'=name\r\n1,'-SUM(A1)\r\n2,-5\r\n")
+        self.assertEqual("".join(table_chunks(["=name"], [["=1"]])), "=name\r\n=1\r\n")
+
+
+class RecordExportTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.store = Store(Path(directory.name) / "data.sqlite3")
+        self.store.initialize()
+
+    def test_record_export_lists_what_records_lists_without_pagination(self):
+        content = b"id,qty\nA,1\nA,2\nB,x\n,3\nC\nD,4,extra,more\nE,5\n"
+        imported = self.store.import_csv("orders", "id", content, "feed.csv", ["qty:integer"])
+        for options in ({}, {"flagged": True}, {"issues": ["duplicate_key"]},
+                        {"issues": ["column_count", "invalid_value"]}, {"flagged": True, "issues": ["missing_key"]}):
+            with self.subTest(**options):
+                headers, width, records = self.store.record_export(imported["id"], **options)
+                self.assertEqual(list(records), self.store.records(imported["id"], limit=1000, **options))
+                self.assertEqual(headers, ["id", "qty"])
+        _, width, _ = self.store.record_export(imported["id"])
+        self.assertEqual(width, 4)
+        _, width, records = self.store.record_export(imported["id"], issues=["duplicate_key"])
+        self.assertEqual((width, [record["number"] for record in records]), (2, [1, 2]))
+        _, width, records = self.store.record_export(imported["id"], issues=["column_count"])
+        self.assertEqual((width, len(list(records))), (4, 2))
+
+    def test_record_export_reads_in_batches_past_the_page_limit(self):
+        content = ("id\n" + "".join(f"K{number % 1200:04}\n" for number in range(2400))).encode()
+        imported = self.store.import_csv("bulk", "id", content, "feed.csv")
+        with patch("datatrail.store.RECORD_BATCH", 7):
+            _, _, records = self.store.record_export(imported["id"], flagged=True)
+            numbers = [record["number"] for record in records]
+        self.assertEqual(numbers, list(range(1, 2401)))
+
+    def test_record_export_checks_inputs_before_returning(self):
+        with self.assertRaises(NotFound):
+            self.store.record_export(99)
+        imported = self.store.import_csv("orders", "id", b"id\nA\n", "feed.csv")
+        with self.assertRaisesRegex(InvalidInput, "Issue codes"):
+            self.store.record_export(imported["id"], issues=["bad_key"])
+        headers, width, records = self.store.record_export(imported["id"], flagged=True)
+        self.assertEqual((headers, width, list(records)), (["id"], 1, []))
 
 
 class ChangeStreamTests(unittest.TestCase):

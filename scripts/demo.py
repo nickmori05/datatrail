@@ -30,6 +30,8 @@ def main():
         dirty = cli("import", "suppliers", "examples/suppliers-messy.csv", "--key", "supplier_id", expected=1)
         comparison = cli("diff", str(before["id"]), str(after["id"]))
         flags = cli("records", str(dirty["id"]), "--flagged")
+        flagged_csv = cli("records", str(dirty["id"]), "--flagged", "--format", "csv",
+                          parse=lambda text: list(csv.reader(io.StringIO(text))))
         issues = cli("show", str(dirty["id"]))["issue_counts"]
         trail = cli("trace", "suppliers", "S002")
         history = cli("history", "suppliers", "S002")
@@ -46,7 +48,8 @@ def main():
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
                           "supplier_trail": trail, "supplier_history": history, "latest_changes": latest,
                           "supplier_summary": summary,
-                          "invalid_values": invalid, "rule_failures": failures, "changes_csv": export}, indent=2))
+                          "invalid_values": invalid, "rule_failures": failures, "changes_csv": export,
+                          "flagged_csv": flagged_csv}, indent=2))
 
 
 if __name__ == "__main__":

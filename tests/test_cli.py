@@ -233,6 +233,40 @@ class CliTests(unittest.TestCase):
         code, output, _ = self.call("diff", "1", "2", "--limit", "1")
         self.assertEqual((code, len(json.loads(output)["changes"])), (0, 1))
 
+    def test_records_export_flagged_rows_as_csv(self):
+        _, output, _ = self.import_example("suppliers-messy.csv")
+        identifier = str(json.loads(output)["id"])
+        code, output, errors = self.call("records", identifier, "--flagged", "--format", "csv")
+        self.assertEqual((code, errors), (0, ""))
+        self.assertEqual(list(csv.reader(io.StringIO(output, newline=""))), [
+            ["record", "line", "issues", "failed_rules", "supplier_id", "name", "city", "status"],
+            ["2", "3", "duplicate_key", "", "S002", "Harbor Tools", "Boston", "active"],
+            ["3", "4", "duplicate_key", "", " S002 ", "Harbor Tools", "Chicago", "active"],
+            ["4", "5", "missing_key", "", "", "Unknown Supplier", "Austin", "active"],
+            ["5", "6", "column_count", "", "S005", "Short Row", "", ""]])
+        code, output, _ = self.call("records", identifier, "--issue", "missing_key", "--format", "csv",
+                                    "--spreadsheet")
+        self.assertEqual((code, output), (0, "\ufeffrecord,line,issues,failed_rules,supplier_id,name,city,status\r\n"
+                                                "4,5,missing_key,,,Unknown Supplier,Austin,active\r\n"))
+        for args, message in ((("--format", "csv", "--limit", "5"), "every record; leave out --limit"),
+                              (("--spreadsheet",), "--spreadsheet only applies to --format csv")):
+            code, output, errors = self.call("records", identifier, *args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertIn(message, errors)
+        code, output, errors = self.call("records", "999", "--format", "csv")
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("does not exist", errors)
+
+    def test_rule_failures_export_as_compact_json(self):
+        source = str(ROOT / "examples" / "contacts.csv")
+        _, output, _ = self.call("import", "contacts", source, "--key", "contact_id", "--required", "email",
+                                 "--allow", "region:east", "--allow", "region:west")
+        code, output, errors = self.call("records", str(json.loads(output)["id"]), "--flagged", "--format", "csv")
+        self.assertEqual(code, 0, errors)
+        rows = list(csv.reader(io.StringIO(output, newline="")))
+        self.assertEqual([row[:4] for row in rows[1:]], [["2", "3", "missing_value", '{"email":["required"]}'],
+                                                         ["4", "5", "invalid_value", '{"region":["allowed"]}']])
+
     def test_csv_export_is_utf8_with_crlf_whatever_the_console_encoding(self):
         for name, content in (("before.csv", "id,name\nA,Ada\n"), ("after.csv", "id,name\nA,Zoë\n")):
             source = self.database.with_name(name)
@@ -287,6 +321,9 @@ class CliTests(unittest.TestCase):
                          [(3, ["amount"]), (4, ["due_date"])])
         self.assertEqual([(row["number"], row["failed_rules"]) for row in demo["rule_failures"]], [
             (2, {"email": ["required"]}), (3, {"supplier_id": ["pattern"]}), (4, {"region": ["allowed"]})])
+        self.assertEqual([row[:3] for row in demo["flagged_csv"]], [
+            ["record", "line", "issues"], ["2", "3", "duplicate_key"], ["3", "4", "duplicate_key"],
+            ["4", "5", "missing_key"], ["5", "6", "column_count"]])
         self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",
                                                     "after_record"], ["S002", "changed", "city", "Boston", "Chicago",
                                                                       "2", "2"]])

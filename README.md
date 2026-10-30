@@ -53,6 +53,7 @@ python3 -m datatrail history suppliers S002
 python3 -m datatrail import suppliers examples/suppliers-messy.csv --key supplier_id
 python3 -m datatrail records 3 --flagged
 python3 -m datatrail records 3 --issue duplicate_key
+python3 -m datatrail records 3 --flagged --format csv > flagged.csv
 python3 -m datatrail summary suppliers
 python3 -m datatrail import invoices examples/invoices.csv --key invoice_id \
   --type amount:decimal --type due_date:date
@@ -103,6 +104,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect flagged rows |
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
+| GET | `/imports/{id}/records?flagged=true&format=csv` | Download every flagged row with its issues and original cells as CSV |
 | GET | `/imports/{id}/source` | Download the exact original bytes |
 | GET | `/datasets/{name}/trace?key=value` | Trace one normalized key |
 | GET | `/datasets/{name}/history?key=value` | Show when one key was added, changed or removed |
@@ -263,7 +265,8 @@ failed a column type list `{"COLUMN": ["type"]}` in `failed_rules`.
   Rows that break a type or value rule list the failing columns and rules in
   `invalid_columns` and `failed_rules`.
   `--flagged` lists only flagged rows, and `--issue CODE` (repeatable) only rows
-  with any of those codes.
+  with any of those codes. `--format csv` writes every listed row as CSV; see
+  [Flagged record exports](#flagged-record-exports).
 - `trace DATASET KEY` finds an exact normalized key in every version, newest
   first, including flagged duplicates.
 - `history DATASET KEY` turns the same exact key into a timeline of the clean
@@ -354,6 +357,31 @@ matches a plain CSV export. `--spreadsheet` without `--format csv` is an error
 that reads the file programmatically. An escaped value cannot be told apart
 from an imported value that already started with an apostrophe.
 
+### Flagged record exports
+
+`records ID --format csv` (`format=csv` on `/imports/{id}/records`) writes every
+row that `records` would list, with the same `--flagged` and `--issue` filters
+(`flagged=` and `issue=` in the API), as one CSV file. It is meant for
+sending a broken export back to whoever produced it: each row says what is
+wrong and shows the cells exactly as they were in the file.
+
+| Column | Value |
+| --- | --- |
+| `record`, `line` | The record number and the line it starts on in the source file |
+| `issues` | Issue codes separated by spaces, for example `duplicate_key invalid_value` |
+| `failed_rules` | The columns that broke a type or value rule and the rules each broke, as compact JSON such as `{"email":["required"]}`; empty when none did |
+| The import's columns | The original, untrimmed cells, under the file's own header |
+
+A row with more cells than the header (`column_count`) keeps its extra cells in
+trailing columns with blank names, and a row with fewer is padded with empty
+cells, so every row has the same width. Rows follow source order. Header row,
+encoding, line endings and the ban on `--limit` and `--offset` are as for change
+exports. `--spreadsheet` escapes formula-like original cells and column names
+the same way, which matters most here: these are exactly the rows nobody has
+checked yet. Rows are read from SQLite 1,000 at a time while the file is
+written. API downloads are named `import-3-records.csv`. If the file has its own `record`, `line`, `issues` or
+`failed_rules` column, both appear under that name; use column positions.
+
 ## Design
 
 | Module | Responsibility |
@@ -364,7 +392,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
 | `datatrail/compare.py` | Key-by-key comparison of two snapshots' records, read in key order |
-| `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
+| `datatrail/export.py` | CSV rows for a comparison or flagged records, written in bounded chunks, optionally escaped for spreadsheets |
 | `datatrail/__main__.py` | Command-line interface |
 | `datatrail/api.py` | FastAPI app and HTTP error mapping |
 
@@ -393,15 +421,16 @@ concurrent retries and version allocation, schema upgrades, key history,
 dataset summaries (including randomized checks that their change counts match
 `diff`), batched comparisons (randomized checks against a whole-snapshot
 comparison, key order for non-ASCII keys, flat memory and no lock held between
-batches), pagination, CLI and API error paths, formula escaping, and the demo.
+batches), pagination, CLI and API error paths, formula escaping, flagged record exports,
+and the demo.
 
 With Docker and Compose available, `python3 scripts/docker_smoke.py` builds the
 image and runs the API in its own Compose project, volume and random localhost
 port. It checks uploads, retries, quality, type and value rule checks, diffs,
 version lookups, key history, dataset summaries, plain and spreadsheet CSV
-exports, a 30,000-record CSV export, source downloads, CLI and API sharing one
-database, and persistence across container recreation, then removes everything
-it created.
+exports, a 30,000-record CSV export, a flagged record export, source
+downloads, CLI and API sharing one database, and persistence across container
+recreation, then removes everything it created.
 
 GitHub Actions runs ruff, the test suite on Python 3.11 and 3.14, and the Docker
 check.

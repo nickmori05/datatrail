@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import __version__
 from .errors import Conflict, InvalidInput, NotFound
-from .export import csv_chunks
+from .export import csv_chunks, record_columns, record_rows, table_chunks
 from .ingest import ISSUE_CODES, MAX_BYTES
 from .store import CHANGE_KINDS, Store, default_database
 
@@ -20,6 +20,9 @@ from .store import CHANGE_KINDS, Store, default_database
 TOO_LARGE = f"CSV files must be at most {MAX_BYTES // (1024 * 1024)} MiB."
 CSV_RESPONSE = {200: {"content": {"text/csv": {"schema": {"type": "string"}}},
                       "description": "JSON by default; with format=csv, one row per changed field"}}
+RECORDS_CSV_RESPONSE = {200: {"content": {"text/csv": {"schema": {"type": "string"}}},
+                              "description": "JSON by default; with format=csv, one row per record with its "
+                                             "issues, failed rules and original cells"}}
 Spreadsheet = Annotated[bool, Query(description="With format=csv, add a byte order mark and escape values that "
                                                  "spreadsheets would run as formulas")]
 
@@ -48,7 +51,7 @@ async def read_csv(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-def check_export(request: Request, output: str, spreadsheet: bool):
+def check_export(request: Request, output: str, spreadsheet: bool, noun="change"):
     """Reject options that do not apply to the chosen format.
 
     CSV exports are never paginated, so explicit limit or offset parameters are a mistake, and only CSV
@@ -58,12 +61,12 @@ def check_export(request: Request, output: str, spreadsheet: bool):
         if spreadsheet:
             raise HTTPException(422, "spreadsheet only applies to format=csv.")
     elif {"limit", "offset"} & request.query_params.keys():
-        raise HTTPException(422, "CSV exports include every change; leave out limit and offset.")
+        raise HTTPException(422, f"CSV exports include every {noun}; leave out limit and offset.")
 
 
-def csv_response(changes, filename: str, spreadsheet: bool, headers=None) -> StreamingResponse:
-    """Stream changes as a CSV attachment. Errors must be raised before this, since the status is sent first."""
-    return StreamingResponse(csv_chunks(changes, spreadsheet), media_type="text/csv; charset=utf-8", headers={
+def csv_response(chunks, filename: str, headers=None) -> StreamingResponse:
+    """Stream CSV chunks as an attachment. Errors must be raised before this, since the status is sent first."""
+    return StreamingResponse(chunks, media_type="text/csv; charset=utf-8", headers={
         **(headers or {}), "Content-Disposition": f'attachment; filename="{filename}"',
         "X-Content-Type-Options": "nosniff",
     })
@@ -145,11 +148,18 @@ def create_app(database: Path | None = None) -> FastAPI:
     def get_import(identifier: int):
         return store.get_import(identifier)
 
-    @app.get("/imports/{identifier}/records")
-    def records(identifier: int, flagged: bool = False, limit: int = Query(default=100, ge=1, le=1000),
-                offset: int = Query(default=0, ge=0),
-                issue: list[Literal[ISSUE_CODES]] = Query(default=[])):
-        return store.records(identifier, flagged=flagged, issues=issue, limit=limit, offset=offset)
+    @app.get("/imports/{identifier}/records", responses=RECORDS_CSV_RESPONSE)
+    def records(identifier: int, request: Request, flagged: bool = False,
+                limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0),
+                issue: list[Literal[ISSUE_CODES]] = Query(default=[]),
+                output: Literal["json", "csv"] = Query(default="json", alias="format"),
+                spreadsheet: Spreadsheet = False):
+        check_export(request, output, spreadsheet, "record")
+        if output == "json":
+            return store.records(identifier, flagged=flagged, issues=issue, limit=limit, offset=offset)
+        headers, width, rows = store.record_export(identifier, flagged=flagged, issues=issue)
+        return csv_response(table_chunks(record_columns(headers, width), record_rows(rows, width), spreadsheet),
+                            f"import-{identifier}-records.csv")
 
     @app.get("/imports/{identifier}/source")
     def source(identifier: int):
@@ -183,8 +193,8 @@ def create_app(database: Path | None = None) -> FastAPI:
         skipped = ",".join(str(item["version"]) for item in selected["skipped_flagged"])
         headers = {"X-Datatrail-Before-Version": str(before), "X-Datatrail-After-Version": str(after),
                    "X-Datatrail-Skipped-Flagged": skipped}
-        return csv_response(store.diff_changes(selected["before_id"], selected["after_id"], kinds=kind),
-                            f"{dataset}-v{before}-v{after}.csv", spreadsheet, headers)
+        changes = store.diff_changes(selected["before_id"], selected["after_id"], kinds=kind)
+        return csv_response(csv_chunks(changes, spreadsheet), f"{dataset}-v{before}-v{after}.csv", headers)
 
     @app.get("/diff", responses=CSV_RESPONSE)
     def diff(before: int, after: int, request: Request, limit: int = Query(default=100, ge=1, le=1000),
@@ -193,8 +203,8 @@ def create_app(database: Path | None = None) -> FastAPI:
         check_export(request, output, spreadsheet)
         if output == "json":
             return store.diff(before, after, limit, offset, kinds=kind)
-        return csv_response(store.diff_changes(before, after, kinds=kind), f"diff-{before}-{after}.csv",
-                            spreadsheet)
+        return csv_response(csv_chunks(store.diff_changes(before, after, kinds=kind), spreadsheet),
+                            f"diff-{before}-{after}.csv")
 
     return app
 

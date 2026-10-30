@@ -247,6 +247,34 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(path, params={"issue": "unknown"}).status_code, 422)
         self.assertEqual(self.client.get("/imports/999/records", params={"issue": "missing_key"}).status_code, 404)
 
+    def test_records_download_as_csv(self):
+        dirty = self.upload(b"id,note\nA,ok\nB,=1+1\nB,-5\n,x\nC\n").json()
+        path = f"/imports/{dirty['id']}/records"
+        response = self.client.get(path, params={"format": "csv", "issue": "duplicate_key"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["content-type"], "text/csv; charset=utf-8")
+        self.assertEqual(response.headers["content-disposition"],
+                         f'attachment; filename="import-{dirty["id"]}-records.csv"')
+        self.assertEqual(response.text, "record,line,issues,failed_rules,id,note\r\n"
+                                        "2,3,duplicate_key,,B,=1+1\r\n3,4,duplicate_key,,B,-5\r\n")
+        sheet = self.client.get(path, params={"format": "csv", "flagged": "true", "spreadsheet": "true"})
+        self.assertEqual(sheet.content.decode(), "\ufeffrecord,line,issues,failed_rules,id,note\r\n"
+                                                 "2,3,duplicate_key,,B,'=1+1\r\n3,4,duplicate_key,,B,-5\r\n"
+                                                 "4,5,missing_key,,,x\r\n5,6,column_count,,C,\r\n")
+        everything = self.client.get(path, params={"format": "csv"}).text.splitlines()
+        self.assertEqual((len(everything), everything[1]), (6, "1,2,,,A,ok"))
+        for params, status in (({"format": "csv", "limit": 5}, 422), ({"spreadsheet": "true"}, 422),
+                               ({"format": "csv", "issue": "unknown"}, 422)):
+            rejected = self.client.get(path, params=params)
+            self.assertEqual(rejected.status_code, status, params)
+            self.assertNotIn("text/csv", rejected.headers["content-type"])
+        self.assertIn("every record", self.client.get(path, params={"format": "csv", "offset": 0}).json()["detail"])
+        missing = self.client.get("/imports/999/records", params={"format": "csv"})
+        self.assertEqual((missing.status_code, missing.headers["content-type"]), (404, "application/json"))
+        operation = self.client.get("/openapi.json").json()["paths"]["/imports/{identifier}/records"]["get"]
+        self.assertIn("text/csv", operation["responses"]["200"]["content"])
+        self.assertTrue({"format", "spreadsheet"} <= {item["name"] for item in operation["parameters"]})
+
     def test_bad_encoding_csv_and_dataset_names_are_rejected_without_imports(self):
         for content in (b"name\nAda", b"id,name\nA,\xff", b'id,name\nA,"unfinished'):
             with self.subTest(content=content):

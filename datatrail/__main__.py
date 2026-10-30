@@ -7,7 +7,7 @@ import sqlite3
 import sys
 
 from .errors import Conflict, InvalidInput, NotFound
-from .export import csv_chunks
+from .export import csv_chunks, record_columns, record_rows, table_chunks
 from .ingest import ISSUE_CODES, MAX_BYTES
 from .store import CHANGE_KINDS, Store, default_database
 
@@ -43,6 +43,8 @@ def parser():
     records.add_argument("--flagged", action="store_true")
     records.add_argument("--issue", action="append", choices=ISSUE_CODES,
                          help="Only list flagged rows with this issue code; repeatable")
+    records.add_argument("--format", choices=("json", "csv"), default="json",
+                         help="csv writes every listed record with its issues, failed rules and original cells")
     trace = commands.add_parser("trace", help="Trace an exact normalized key through snapshots")
     trace.add_argument("dataset")
     trace.add_argument("key")
@@ -61,6 +63,7 @@ def parser():
                              help="Only list this kind of change; repeatable")
         command.add_argument("--format", choices=("json", "csv"), default="json",
                              help="csv writes every listed change, one row per changed field, without counts")
+    for command in (records, diff, changes):
         command.add_argument("--spreadsheet", action="store_true",
                              help="With --format csv, add a byte order mark and escape values that spreadsheets "
                                   "would run as formulas")
@@ -72,9 +75,14 @@ def parser():
 
 
 def export(store, args):
-    """Write every requested change as CSV to stdout, warning on stderr about skipped flagged versions."""
+    """Write every requested record or change as CSV to stdout, warning on stderr about skipped flagged versions."""
     if args.limit is not None or args.offset is not None:
-        raise InvalidInput("CSV exports include every change; leave out --limit and --offset.")
+        noun = "record" if args.command == "records" else "change"
+        raise InvalidInput(f"CSV exports include every {noun}; leave out --limit and --offset.")
+    if args.command == "records":
+        headers, width, records = store.record_export(args.import_id, flagged=args.flagged, issues=args.issue)
+        write(table_chunks(record_columns(headers, width), record_rows(records, width), args.spreadsheet))
+        return
     if args.command == "diff":
         changes = store.diff_changes(args.before, args.after, kinds=args.kind)
     else:
@@ -84,7 +92,11 @@ def export(store, args):
             versions = ", ".join(str(item["version"]) for item in selected["skipped_flagged"])
             print(f"Warning: comparing versions {selected['before_version']} and {selected['after_version']}; "
                   f"skipped flagged versions {versions}.", file=sys.stderr)
-    chunks = csv_chunks(changes, spreadsheet=args.spreadsheet)
+    write(csv_chunks(changes, spreadsheet=args.spreadsheet))
+
+
+def write(chunks):
+    """Write CSV text chunks to stdout as UTF-8 bytes."""
     # Write UTF-8 bytes, so the console's encoding can neither reject a value nor rewrite the CRLF line endings.
     output = getattr(sys.stdout, "buffer", None)
     if output is None:

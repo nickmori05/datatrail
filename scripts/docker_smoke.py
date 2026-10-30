@@ -66,6 +66,13 @@ def main():
         duplicates = request(base, f"/imports/{messy['id']}/records?issue=duplicate_key")
         assert [row["number"] for row in duplicates] == [2, 3], duplicates
         request(base, f"/imports/{messy['id']}/records?issue=unknown", expected=422)
+        flagged = request(base, f"/imports/{messy['id']}/records?flagged=true&format=csv", raw=True).decode()
+        assert flagged.splitlines() == ["record,line,issues,failed_rules,supplier_id,name,city,status",
+                                        "2,3,duplicate_key,,S002,Harbor Tools,Boston,active",
+                                        "3,4,duplicate_key,, S002 ,Harbor Tools,Chicago,active",
+                                        "4,5,missing_key,,,Unknown Supplier,Austin,active",
+                                        "5,6,column_count,,S005,Short Row,,"], flagged
+        request(base, f"/imports/{messy['id']}/records?format=csv&limit=5", expected=422)
         invoice_bytes = (ROOT / "examples/invoices.csv").read_bytes()
         typed = "/datasets/invoices/imports?key=invoice_id&type=amount:decimal&type=due_date:date"
         invoices = request(base, typed, invoice_bytes, expected=201)
@@ -134,8 +141,9 @@ def main():
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
             "bulk": 2, "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality, type and value rule checks, diffs, plain, spreadsheet and large CSV "
-              "exports, latest changes, provenance, key history, dataset summaries and CLI reads passed.", flush=True)
+        print("HTTP imports, retries, quality, type and value rule checks, diffs, plain, spreadsheet, large and "
+              "flagged record CSV exports, latest changes, provenance, key history, dataset summaries and CLI reads "
+              "passed.", flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()
