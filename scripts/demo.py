@@ -37,7 +37,7 @@ def main():
         summary = cli("summary", "suppliers")
         export = cli("changes", "suppliers", "--format", "csv", parse=lambda text: list(csv.reader(io.StringIO(text))))
         invoices = cli("import", "invoices", "examples/invoices.csv", "--key", "invoice_id",
-                       "--type", "amount:decimal", "--type", "due_date:date", expected=1)
+                       "--type", "amount:decimal", "--type", "due_date:date", "--min", "amount:0", expected=1)
         invalid = cli("records", str(invoices["id"]), "--issue", "invalid_value")
         contacts = cli("import", "contacts", "examples/contacts.csv", "--key", "contact_id", "--required", "email",
                        "--allow", "region:east", "--allow", "region:west", "--pattern", "supplier_id:S[0-9]{3}",

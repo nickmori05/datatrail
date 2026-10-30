@@ -236,6 +236,26 @@ class ApiTests(unittest.TestCase):
         parameters = self.client.get("/openapi.json").json()["paths"]["/datasets/{dataset}/imports"]["post"]
         self.assertTrue({"required", "allow", "pattern"} <= {item["name"] for item in parameters["parameters"]})
 
+    def test_upload_range_parameters_flag_values_outside_the_bounds(self):
+        content = b"id,qty,due\nA,5,2026-01-15\nB,0,2026-01-15\nC,12,2025-12-31\nD,,\n"
+        params = {"type": ["qty:integer", "due:date"], "min": ["qty:1", "due:2026-01-01"], "max": "qty:10"}
+        response = self.upload(content, dataset="orders", **params)
+        self.assertEqual(response.status_code, 201, response.text)
+        result = response.json()
+        self.assertEqual((result["rules"]["minimum"], result["rules"]["maximum"]),
+                         ({"due": "2026-01-01", "qty": "1"}, {"qty": "10"}))
+        rows = self.client.get(f"/imports/{result['id']}/records", params={"flagged": True}).json()
+        self.assertEqual([row["failed_rules"] for row in rows], [{"qty": ["min"]}, {"due": ["min"], "qty": ["max"]}])
+        self.assertEqual(self.upload(b"id,qty,due\nA,10,\n", dataset="orders").json()["rejected_count"], 0)
+        self.assertEqual(self.upload(content, dataset="orders", **{**params, "max": "qty:+010"}).status_code, 200)
+        self.assertEqual(self.upload(content, dataset="orders", **{**params, "max": "qty:11"}).status_code, 409)
+        for extra in ({"min": "qty:1"}, {"type": "qty:integer", "min": "qty:x"},
+                      {"type": "qty:integer", "min": "qty:9", "max": "qty:1"}):
+            with self.subTest(params=extra):
+                self.assertEqual(self.upload(content, dataset="fresh", **extra).status_code, 400)
+        parameters = self.client.get("/openapi.json").json()["paths"]["/datasets/{dataset}/imports"]["post"]
+        self.assertTrue({"min", "max"} <= {item["name"] for item in parameters["parameters"]})
+
     def test_records_filter_by_repeated_issue_parameters(self):
         dirty = self.upload(b"id,name\nA,Ada\nB,Bob\nB,Bill\n,Missing\nC\n").json()
         path = f"/imports/{dirty['id']}/records"

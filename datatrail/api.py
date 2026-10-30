@@ -121,10 +121,16 @@ def create_app(database: Path | None = None) -> FastAPI:
                                                     description="COLUMN:VALUE, one accepted value per parameter"),
                          patterns: list[str] = Query(default=[], alias="pattern",
                                                      description="COLUMN:PATTERN, a Python regular expression that "
-                                                                 "nonempty values must fully match")):
+                                                                 "nonempty values must fully match"),
+                         minimum: list[str] = Query(default=[], alias="min",
+                                                    description="COLUMN:VALUE, the smallest value a typed column "
+                                                                "accepts"),
+                         maximum: list[str] = Query(default=[], alias="max",
+                                                    description="COLUMN:VALUE, the largest value a typed column "
+                                                                "accepts")):
         content = await read_csv(request)
         result = await run_in_threadpool(store.import_csv, dataset, key, content, source_name, column_types,
-                                         required, allowed, patterns)
+                                         required, allowed, patterns, minimum, maximum)
         response.status_code = 200 if result["replayed"] else 201
         response.headers["Location"] = f"/imports/{result['id']}"
         return result

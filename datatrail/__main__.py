@@ -31,6 +31,10 @@ def parser():
                         help="Accept VALUE in COLUMN; repeat for each value, and other values are flagged")
     ingest.add_argument("--pattern", action="append", dest="patterns", metavar="COLUMN:PATTERN",
                         help="Flag rows whose COLUMN does not fully match the Python regular expression PATTERN")
+    ingest.add_argument("--min", action="append", dest="minimum", metavar="COLUMN:VALUE",
+                        help="Flag rows whose typed COLUMN is below VALUE (inclusive bound)")
+    ingest.add_argument("--max", action="append", dest="maximum", metavar="COLUMN:VALUE",
+                        help="Flag rows whose typed COLUMN is above VALUE (inclusive bound)")
     datasets = commands.add_parser("datasets", help="List datasets")
     imports = commands.add_parser("imports", help="List dataset snapshots")
     imports.add_argument("dataset")
@@ -114,7 +118,7 @@ def main(argv=None):
             with args.file.open("rb") as source:
                 content = source.read(MAX_BYTES + 1)
             result = store.import_csv(args.dataset, args.key, content, args.file.name, args.column_types,
-                                      args.required, args.allowed, args.patterns)
+                                      args.required, args.allowed, args.patterns, args.minimum, args.maximum)
             code = 1 if result["rejected_count"] else 0
         elif args.command == "datasets":
             result = store.datasets(args.limit, args.offset)

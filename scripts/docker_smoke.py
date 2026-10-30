@@ -67,11 +67,15 @@ def main():
         assert [row["number"] for row in duplicates] == [2, 3], duplicates
         request(base, f"/imports/{messy['id']}/records?issue=unknown", expected=422)
         invoice_bytes = (ROOT / "examples/invoices.csv").read_bytes()
-        typed = "/datasets/invoices/imports?key=invoice_id&type=amount:decimal&type=due_date:date"
+        typed = "/datasets/invoices/imports?key=invoice_id&type=amount:decimal&type=due_date:date&min=amount:0"
         invoices = request(base, typed, invoice_bytes, expected=201)
-        assert (invoices["rejected_count"], invoices["issue_counts"]["invalid_value"]) == (2, 2), invoices
+        assert (invoices["rejected_count"], invoices["issue_counts"]["invalid_value"]) == (3, 3), invoices
+        assert invoices["rules"]["minimum"] == {"amount": "0"}, invoices
         invalid = request(base, f"/imports/{invoices['id']}/records?issue=invalid_value")
-        assert [row["invalid_columns"] for row in invalid] == [["amount"], ["due_date"]], invalid
+        assert [row["failed_rules"] for row in invalid] == [{"amount": ["type"]}, {"due_date": ["type"]},
+                                                            {"amount": ["min"]}], invalid
+        request(base, "/datasets/invoices/imports?key=invoice_id&max=amount:5000", invoice_bytes, expected=409)
+        request(base, "/datasets/other/imports?key=invoice_id&min=amount:0", invoice_bytes, expected=400)
         request(base, "/datasets/invoices/imports?key=invoice_id&type=amount:integer", invoice_bytes, expected=409)
         request(base, "/datasets/other/imports?key=invoice_id&type=amount:money", invoice_bytes, expected=400)
         contact_bytes = (ROOT / "examples/contacts.csv").read_bytes()
@@ -134,8 +138,9 @@ def main():
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
             "bulk": 2, "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
-        print("HTTP imports, retries, quality, type and value rule checks, diffs, plain, spreadsheet and large CSV "
-              "exports, latest changes, provenance, key history, dataset summaries and CLI reads passed.", flush=True)
+        print("HTTP imports, retries, quality, type, value rule and range checks, diffs, plain, spreadsheet and "
+              "large CSV exports, latest changes, provenance, key history, dataset summaries and CLI reads passed.",
+              flush=True)
 
         run("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "45", "api")
         base = endpoint()

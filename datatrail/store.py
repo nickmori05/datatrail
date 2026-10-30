@@ -13,7 +13,7 @@ import sqlite3
 from .compare import compare, iter_changes, key_history, merge_by_key
 from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
-from .rules import parse_column_types, parse_rules, saved_rules
+from .rules import check_ranges, parse_column_types, parse_rules, saved_rules
 from .summary import dataset_summary
 from .versions import select_versions
 
@@ -127,12 +127,12 @@ class Store:
         return result
 
     def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None,
-                   required=None, allowed=None, patterns=None) -> dict:
+                   required=None, allowed=None, patterns=None, minimum=None, maximum=None) -> dict:
         """Save a CSV file as the dataset's next version, or return the existing import for identical bytes.
 
         The dataset is created on first use with this key column, column types and value rules (`required`,
-        `allowed` and `patterns`, see `parse_rules`); later imports must match them. The result includes
-        `replayed`, which is true for an exact retry.
+        `allowed`, `patterns`, `minimum` and `maximum`, see `parse_rules`); later imports must match them. The
+        result includes `replayed`, which is true for an exact retry.
         """
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
             raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, "
@@ -141,7 +141,8 @@ class Store:
             raise InvalidInput("Source name must be 1–255 characters without control characters.")
         # Omitted column types or value rules mean "use the dataset's saved ones"; a new dataset then has none.
         types = parse_column_types(column_types) if column_types else None
-        rules = parse_rules(required or [], allowed or [], patterns or []) if required or allowed or patterns else None
+        given = (required or [], allowed or [], patterns or [], minimum or [], maximum or [])
+        rules = parse_rules(*given) if any(given) else None
         if types is None or rules is None:
             with closing(self.connect()) as connection:
                 saved = connection.execute(
@@ -151,6 +152,8 @@ class Store:
                 types = json.loads(saved["column_types_json"]) if saved else {}
             if rules is None:
                 rules = saved_rules(json.loads(saved["rules_json"]) if saved else {})
+        # Bounds are checked and spelled one way once types are known, so equal ranges compare equal.
+        rules = check_ranges(types, rules)
         headers, rows = parse_csv(content, key_column, types, rules)
         digest = hashlib.sha256(content).hexdigest()
         accepted = sum(not row.issues for row in rows)
