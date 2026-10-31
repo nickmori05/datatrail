@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS imports (
     accepted_count INTEGER NOT NULL,
     rejected_count INTEGER NOT NULL,
     source BLOB NOT NULL,
+    delimiter TEXT NOT NULL DEFAULT 'comma',
     UNIQUE(dataset_id, version),
     UNIQUE(dataset_id, sha256)
 );

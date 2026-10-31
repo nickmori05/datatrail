@@ -13,6 +13,8 @@ MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 50_000
 MAX_COLUMNS = 64
 ISSUE_CODES = ("column_count", "missing_key", "duplicate_key", "invalid_value", "missing_value")
+# Field separators by the name used on the command line and in the API, where ";" and tabs are awkward to type.
+DELIMITERS = {"comma": ",", "semicolon": ";", "tab": "\t", "pipe": "|"}
 
 
 @dataclass
@@ -37,13 +39,27 @@ class ParsedRow:
         return list(self.failed)
 
 
+def delimiter_hint(headers: list[str], delimiter: str) -> str:
+    """A suggestion when the whole header was read as one column but contains another delimiter, else ""."""
+    if len(headers) != 1:
+        return ""
+    others = [name for name, character in DELIMITERS.items() if name != delimiter and character in headers[0]]
+    if not others:
+        return ""
+    return (" The header was read as one column; if the file uses another separator, set the delimiter to "
+            f"{' or '.join(others)}.")
+
+
 def parse_csv(content: bytes, key_column: str, column_types: dict[str, str] | None = None,
-              rules: dict | None = None) -> tuple[list[str], list[ParsedRow]]:
+              rules: dict | None = None, delimiter: str = "comma") -> tuple[list[str], list[ParsedRow]]:
     """Parse a whole CSV file and flag row-level problems.
 
     Returns the trimmed header and every nonblank record in source order. Problems that make the
     file unusable (encoding, quoting, limits, header, missing key, typed or rule column) raise InvalidInput.
+    `delimiter` names the field separator, one of DELIMITERS; quoting works the same with any of them.
     """
+    if delimiter not in DELIMITERS:
+        raise InvalidInput(f"Delimiters must be one of {', '.join(DELIMITERS)}.")
     column_types = column_types or {}
     rules = saved_rules(rules or {})
     if key_column in rules["required"]:
@@ -57,7 +73,7 @@ def parse_csv(content: bytes, key_column: str, column_types: dict[str, str] | No
         raise InvalidInput("CSV files must use UTF-8 encoding.") from error
     if "\x00" in text:
         raise InvalidInput("CSV files must not contain null characters.")
-    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=DELIMITERS[delimiter], strict=True)
     rows = []
     try:
         headers = [value.strip() for value in next(reader, [])]
@@ -66,7 +82,7 @@ def parse_csv(content: bytes, key_column: str, column_types: dict[str, str] | No
         if len(set(headers)) != len(headers):
             raise InvalidInput("Column names must be unique after trimming whitespace.")
         if key_column not in headers:
-            raise InvalidInput(f"Key column '{key_column}' is missing.")
+            raise InvalidInput(f"Key column '{key_column}' is missing.{delimiter_hint(headers, delimiter)}")
         for column in checks.columns:
             if column not in headers:
                 kind = "Typed" if column in column_types else "Rule"
