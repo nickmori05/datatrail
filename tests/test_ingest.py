@@ -1,8 +1,10 @@
+import csv
+import io
 import unittest
 from unittest.mock import patch
 
 from datatrail.errors import InvalidInput
-from datatrail.ingest import MAX_BYTES, parse_csv
+from datatrail.ingest import DELIMITERS, MAX_BYTES, parse_csv
 from datatrail.rules import parse_column_types
 
 
@@ -47,6 +49,42 @@ class ParsingTests(unittest.TestCase):
             parse_csv(b"x" * (MAX_BYTES + 1), "id")
         with patch("datatrail.ingest.MAX_ROWS", 2), self.assertRaisesRegex(InvalidInput, "records"):
             parse_csv(b"id\nA\nB\nC\n", "id")
+
+
+class DelimiterTests(unittest.TestCase):
+    def test_each_delimiter_reads_the_same_records(self):
+        lines = [["id", "name", "note"], ["A", "Ada, Countess", "x;y|z\tw"], ["B", "Bo", 'say "hi"\nthere']]
+        for name, character in DELIMITERS.items():
+            with self.subTest(delimiter=name):
+                buffer = io.StringIO()
+                csv.writer(buffer, delimiter=character).writerows(lines)
+                headers, rows = parse_csv(buffer.getvalue().encode(), "id", delimiter=name)
+                self.assertEqual((headers, [row.raw for row in rows]), (lines[0], lines[1:]))
+                self.assertEqual([(row.number, row.line) for row in rows], [(1, 2), (2, 3)])
+
+    def test_semicolon_files_keep_commas_inside_unquoted_values(self):
+        headers, rows = parse_csv(b"sku; price ;note\nP1; 0,42 ;bolts, M8\nP2;1,05\n", "sku", delimiter="semicolon")
+        self.assertEqual(headers, ["sku", "price", "note"])
+        self.assertEqual(rows[0].data, {"sku": "P1", "price": "0,42", "note": "bolts, M8"})
+        self.assertEqual(rows[0].raw, ["P1", " 0,42 ", "bolts, M8"])
+        self.assertEqual(rows[1].issues, ["column_count"])
+
+    def test_comma_is_the_default_and_unknown_delimiters_are_rejected(self):
+        self.assertEqual(parse_csv(b"id;name\nA;Ada\n", "id;name")[0], ["id;name"])
+        for delimiter in (";", "\t", "Comma", "colon", ""):
+            with self.subTest(delimiter=delimiter), self.assertRaisesRegex(InvalidInput, "comma, semicolon, tab, pipe"):
+                parse_csv(b"id\nA\n", "id", delimiter=delimiter)
+
+    def test_a_missing_key_suggests_the_separator_the_header_contains(self):
+        for content, delimiter, hint in ((b"id;name\nA;Ada\n", "comma", "set the delimiter to semicolon"),
+                                         (b"id\tname|x\nA\tAda|x\n", "comma", "to tab or pipe"),
+                                         (b"id,name\nA,Ada\n", "semicolon", "to comma")):
+            with self.subTest(content=content), self.assertRaisesRegex(InvalidInput, f"one column.*{hint}"):
+                parse_csv(content, "id", delimiter=delimiter)
+        for content in (b"name\nAda\n", b"code;name,x\n1;2,3\n"):
+            with self.subTest(content=content), self.assertRaises(InvalidInput) as raised:
+                parse_csv(content, "id", delimiter="semicolon" if b";" in content else "comma")
+            self.assertEqual(str(raised.exception), "Key column 'id' is missing.")
 
 
 class ColumnTypeTests(unittest.TestCase):

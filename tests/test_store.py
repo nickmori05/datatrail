@@ -78,6 +78,36 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([dataset["name"] for dataset in self.store.datasets()], ["orders", "suppliers"])
         self.assertEqual(len(self.store.imports("orders")), 1)
 
+    def test_delimiter_is_saved_per_import_and_does_not_change_comparisons(self):
+        first = self.ingest(b"id,name,city\nA,Ada,Paris\nB,Bo,Rome\n")
+        second = self.store.import_csv("suppliers", "id", b"id;name;city\nA;Ada;Lyon\nB;Bo;Rome\n", "eu.csv",
+                                       delimiter="semicolon")
+        third = self.store.import_csv("suppliers", "id", b"city\tid\tname\nLyon\tA\tAda\nRome\tB\tBo\n",
+                                      "eu.tsv", delimiter="tab")
+        self.assertEqual([item["delimiter"] for item in (first, second, third)], ["comma", "semicolon", "tab"])
+        self.assertEqual([item["delimiter"] for item in self.store.imports("suppliers")], ["tab", "semicolon", "comma"])
+        self.assertEqual(self.store.get_import(second["id"])["delimiter"], "semicolon")
+        self.assertEqual(self.store.diff(first["id"], second["id"])["counts"],
+                         {"added": 0, "removed": 0, "changed": 1, "unchanged": 1})
+        self.assertEqual(self.store.latest_changes("suppliers")["counts"]["unchanged"], 2)
+        self.assertEqual(self.store.source(third["id"]), b"city\tid\tname\nLyon\tA\tAda\nRome\tB\tBo\n")
+
+    def test_same_bytes_with_another_delimiter_conflict_instead_of_replaying(self):
+        content = b"id\nA,1\nB;2\n"
+        first = self.ingest(content)
+        self.assertEqual(self.store.import_csv("suppliers", "id", content, "again.csv")["id"], first["id"])
+        with self.assertRaisesRegex(Conflict, "version 1 with the comma delimiter"):
+            self.store.import_csv("suppliers", "id", content, "again.csv", delimiter="semicolon")
+        other = self.store.import_csv("elsewhere", "id", content, "feed.csv", delimiter="semicolon")
+        self.assertEqual((other["replayed"], other["delimiter"]), (False, "semicolon"))
+        self.assertEqual(len(self.store.imports("suppliers")), 1)
+
+    def test_unknown_delimiters_and_wrong_separators_save_nothing(self):
+        for delimiter, message in (("colon", "Delimiters must be one of"), ("comma", "set the delimiter to semicolon")):
+            with self.subTest(delimiter=delimiter), self.assertRaisesRegex(InvalidInput, message):
+                self.store.import_csv("eu", "id", b"id;name\nA;Ada\n", "eu.csv", delimiter=delimiter)
+        self.assertEqual(self.store.datasets(), [])
+
     def test_databases_created_before_column_types_are_upgraded_in_place(self):
         legacy = self.database.with_name("legacy.sqlite3")
         content = b"id,name\nA,Ada\n"
@@ -94,6 +124,7 @@ class StoreTests(unittest.TestCase):
         store.initialize()
         old = store.get_import(1)
         self.assertEqual((old["column_types"], old["issue_counts"]["invalid_value"]), ({}, 0))
+        self.assertEqual(old["delimiter"], "comma")
         self.assertEqual(store.records(1)[0]["invalid_columns"], [])
         self.assertEqual(store.import_csv("suppliers", "id", content, "again.csv")["replayed"], True)
         new = store.import_csv("suppliers", "id", b"id,name\nA,Ada Lovelace\n", "new.csv")

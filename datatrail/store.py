@@ -23,7 +23,8 @@ DEFAULT_DATABASE = ".local/datatrail.sqlite3"
 # Records read per query when comparing snapshots, which bounds the memory a diff or export needs.
 RECORD_BATCH = 1000
 IMPORT_FIELDS = """i.id, d.name AS dataset, d.key_column, d.column_types_json, d.rules_json, i.version,
-    i.source_name, i.sha256, i.imported_at, i.headers_json, i.row_count, i.accepted_count, i.rejected_count"""
+    i.source_name, i.sha256, i.imported_at, i.delimiter, i.headers_json, i.row_count, i.accepted_count,
+    i.rejected_count"""
 # Columns added after the first release. Older databases gain them, with their defaults, on startup. The
 # optional statement then fills the new column from existing data, in the same transaction.
 ADDED_COLUMNS = (("datasets", "column_types_json", "TEXT NOT NULL DEFAULT '{}'", None),
@@ -32,7 +33,9 @@ ADDED_COLUMNS = (("datasets", "column_types_json", "TEXT NOT NULL DEFAULT '{}'",
                  # Before value rules, a column could only be invalid because it failed its type.
                  ("records", "failed_rules_json", "TEXT NOT NULL DEFAULT '{}'",
                   """UPDATE records SET failed_rules_json = (SELECT json_group_object(value, json_array('type'))
-                     FROM json_each(records.invalid_columns_json)) WHERE invalid_columns_json <> '[]'"""))
+                     FROM json_each(records.invalid_columns_json)) WHERE invalid_columns_json <> '[]'"""),
+                 # Every import before delimiters were configurable was read as comma-separated.
+                 ("imports", "delimiter", "TEXT NOT NULL DEFAULT 'comma'", None))
 
 
 def default_database() -> Path:
@@ -127,12 +130,13 @@ class Store:
         return result
 
     def import_csv(self, dataset: str, key_column: str, content: bytes, source_name: str, column_types=None,
-                   required=None, allowed=None, patterns=None) -> dict:
+                   required=None, allowed=None, patterns=None, delimiter="comma") -> dict:
         """Save a CSV file as the dataset's next version, or return the existing import for identical bytes.
 
         The dataset is created on first use with this key column, column types and value rules (`required`,
-        `allowed` and `patterns`, see `parse_rules`); later imports must match them. The result includes
-        `replayed`, which is true for an exact retry.
+        `allowed` and `patterns`, see `parse_rules`); later imports must match them. The `delimiter` belongs to
+        the file, not the dataset, so each import may use a different one. The result includes `replayed`,
+        which is true for an exact retry.
         """
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", dataset):
             raise InvalidInput("Dataset names must be 1–64 letters, digits, hyphens or underscores, "
@@ -151,7 +155,7 @@ class Store:
                 types = json.loads(saved["column_types_json"]) if saved else {}
             if rules is None:
                 rules = saved_rules(json.loads(saved["rules_json"]) if saved else {})
-        headers, rows = parse_csv(content, key_column, types, rules)
+        headers, rows = parse_csv(content, key_column, types, rules, delimiter)
         digest = hashlib.sha256(content).hexdigest()
         accepted = sum(not row.issues for row in rows)
         with closing(self.connect()) as connection, connection:
@@ -171,19 +175,23 @@ class Store:
                     raise Conflict("A dataset's value rules cannot change. Use a new dataset name.")
                 dataset_id = existing["id"]
             previous = connection.execute(
-                "SELECT id FROM imports WHERE dataset_id = ? AND sha256 = ?", (dataset_id, digest)
+                "SELECT id, version, delimiter FROM imports WHERE dataset_id = ? AND sha256 = ?", (dataset_id, digest)
             ).fetchone()
             if previous is not None:
+                # The same bytes split on another character are different records, not a retry.
+                if previous["delimiter"] != delimiter:
+                    raise Conflict(f"This file was already imported as version {previous['version']} with the "
+                                   f"{previous['delimiter']} delimiter.")
                 return {**self._import(connection, previous["id"]), "replayed": True}
             version = connection.execute(
                 "SELECT COALESCE(MAX(version), 0) + 1 FROM imports WHERE dataset_id = ?", (dataset_id,)
             ).fetchone()[0]
             identifier = connection.execute(
                 """INSERT INTO imports (dataset_id, version, source_name, sha256, imported_at,
-                   headers_json, row_count, accepted_count, rejected_count, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   headers_json, row_count, accepted_count, rejected_count, source, delimiter)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (dataset_id, version, source_name, digest, datetime.now(UTC).isoformat(),
-                 json.dumps(headers), len(rows), accepted, len(rows) - accepted, content),
+                 json.dumps(headers), len(rows), accepted, len(rows) - accepted, content, delimiter),
             ).lastrowid
             connection.executemany(
                 """INSERT INTO records (import_id, number, source_line, entity_key, raw_json,

@@ -107,6 +107,14 @@ def main():
                          "N1,changed,note,ok,\"'=HYPERLINK(\"\"http://example.invalid\"\")\",1,1\r\n"
                          "N2,changed,note,-5,Zo\u00eb,2,2\r\n").encode(), sheet
         request(base, "/datasets/notes/changes?spreadsheet=true", expected=422)
+        parts_bytes = (ROOT / "examples/parts-eu.csv").read_bytes()
+        wrong = request(base, "/datasets/parts/imports?key=sku", parts_bytes, expected=400)
+        assert "set the delimiter to semicolon" in wrong["detail"], wrong
+        parts = request(base, "/datasets/parts/imports?key=sku&delimiter=semicolon", parts_bytes, expected=201)
+        assert (parts["delimiter"], parts["row_count"], parts["rejected_count"]) == ("semicolon", 3, 0), parts
+        rows = request(base, f"/imports/{parts['id']}/records")
+        assert rows[2]["data"]["description"] == "Lock nuts; nylon insert", rows
+        assert request(base, f"/imports/{parts['id']}/source", raw=True) == parts_bytes
         # Above the old 10,000-record limit, and many read batches long.
         bulk, rows = "/datasets/bulk/imports?key=id", 30_000
         for flip in (0, 1):
@@ -133,7 +141,7 @@ def main():
         request(base, "/datasets/missing/summary", expected=404)
         datasets = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "datasets"))
         assert {item["name"]: item["import_count"] for item in datasets} == {
-            "bulk": 2, "contacts": 1, "invoices": 1, "notes": 2, "suppliers": 3}, datasets
+            "bulk": 2, "contacts": 1, "invoices": 1, "notes": 2, "parts": 1, "suppliers": 3}, datasets
         print("HTTP imports, retries, quality, type and value rule checks, diffs, plain, spreadsheet and large CSV "
               "exports, latest changes, provenance, key history, dataset summaries and CLI reads passed.", flush=True)
 
