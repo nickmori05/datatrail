@@ -8,7 +8,7 @@ import sys
 
 from .errors import Conflict, InvalidInput, NotFound
 from .export import csv_chunks
-from .ingest import ISSUE_CODES, MAX_BYTES
+from .ingest import DELIMITERS, ISSUE_CODES, MAX_BYTES
 from .store import CHANGE_KINDS, Store, default_database
 
 
@@ -21,6 +21,8 @@ def parser():
     ingest.add_argument("dataset")
     ingest.add_argument("file", type=Path)
     ingest.add_argument("--key", required=True)
+    ingest.add_argument("--delimiter", choices=DELIMITERS, default="comma",
+                        help="The character between fields in this file (default comma); may differ between imports")
     ingest.add_argument("--type", action="append", dest="column_types", metavar="COLUMN:TYPE",
                         help="Flag rows whose COLUMN is not a TYPE (integer, decimal or date); repeatable, "
                              "fixed for the dataset")
@@ -114,7 +116,7 @@ def main(argv=None):
             with args.file.open("rb") as source:
                 content = source.read(MAX_BYTES + 1)
             result = store.import_csv(args.dataset, args.key, content, args.file.name, args.column_types,
-                                      args.required, args.allowed, args.patterns)
+                                      args.required, args.allowed, args.patterns, delimiter=args.delimiter)
             code = 1 if result["rejected_count"] else 0
         elif args.command == "datasets":
             result = store.datasets(args.limit, args.offset)

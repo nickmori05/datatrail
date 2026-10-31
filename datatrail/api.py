@@ -13,7 +13,7 @@ from starlette.concurrency import run_in_threadpool
 from . import __version__
 from .errors import Conflict, InvalidInput, NotFound
 from .export import csv_chunks
-from .ingest import ISSUE_CODES, MAX_BYTES
+from .ingest import DELIMITERS, ISSUE_CODES, MAX_BYTES
 from .store import CHANGE_KINDS, Store, default_database
 
 
@@ -115,6 +115,8 @@ def create_app(database: Path | None = None) -> FastAPI:
     async def import_csv(dataset: str, request: Request, response: Response,
                          key: str = Query(min_length=1, max_length=128),
                          source_name: str = Query(default="upload.csv", min_length=1, max_length=255),
+                         delimiter: Literal[tuple(DELIMITERS)] = Query(
+                             default="comma", description="The character between fields in this file"),
                          column_types: list[str] = Query(default=[], alias="type"),
                          required: list[str] = Query(default=[], description="A column that must not be empty"),
                          allowed: list[str] = Query(default=[], alias="allow",
@@ -124,7 +126,7 @@ def create_app(database: Path | None = None) -> FastAPI:
                                                                  "nonempty values must fully match")):
         content = await read_csv(request)
         result = await run_in_threadpool(store.import_csv, dataset, key, content, source_name, column_types,
-                                         required, allowed, patterns)
+                                         required, allowed, patterns, delimiter)
         response.status_code = 200 if result["replayed"] else 201
         response.headers["Location"] = f"/imports/{result['id']}"
         return result

@@ -41,6 +41,27 @@ class ApiTests(unittest.TestCase):
         self.assertIn("attachment", source.headers["content-disposition"])
         self.assertEqual(self.client.get(response.headers["location"]).json()["id"], identifier)
 
+    def test_upload_delimiter_parameter_reads_tab_separated_files(self):
+        content = b"id\tname\nA\tAda, Countess\n"
+        response = self.upload(content, delimiter="tab")
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["delimiter"], "tab")
+        records = self.client.get(f"/imports/{response.json()['id']}/records").json()
+        self.assertEqual(records[0]["data"], {"id": "A", "name": "Ada, Countess"})
+        self.assertEqual(self.upload(content, delimiter="tab").status_code, 200)
+        self.assertEqual(self.upload(content, delimiter="pipe").status_code, 400)
+        conflict = self.upload(b"id\nA,1\n", dataset="plain")
+        self.assertEqual(self.upload(b"id\nA,1\n", dataset="plain", delimiter="semicolon").status_code, 409)
+        self.assertEqual(conflict.json()["delimiter"], "comma")
+        wrong = self.upload(content, dataset="fresh")
+        self.assertEqual(wrong.status_code, 400)
+        self.assertIn("set the delimiter to tab", wrong.json()["detail"])
+        self.assertEqual(self.upload(content, dataset="fresh", delimiter="\t").status_code, 422)
+        parameters = self.client.get("/openapi.json").json()["paths"]["/datasets/{dataset}/imports"]["post"]
+        delimiter, = (item for item in parameters["parameters"] if item["name"] == "delimiter")
+        self.assertEqual((delimiter["schema"]["enum"], delimiter["schema"]["default"]),
+                         (["comma", "semicolon", "tab", "pipe"], "comma"))
+
     def test_diff_and_trace_share_cli_storage(self):
         store = Store(self.database)
         before = store.import_csv("suppliers", "id", b"id,name\nA,Ada\n", "before.csv")

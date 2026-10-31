@@ -67,6 +67,23 @@ class CliTests(unittest.TestCase):
         _, output, _ = self.call("imports", "suppliers")
         self.assertEqual(len(json.loads(output)), 2)
 
+    def test_import_delimiter_option_reads_semicolon_files(self):
+        source = str(ROOT / "examples" / "parts-eu.csv")
+        code, output, errors = self.call("import", "parts", source, "--key", "sku")
+        self.assertEqual((code, output), (2, ""))
+        self.assertIn("set the delimiter to semicolon", errors)
+        code, output, errors = self.call("import", "parts", source, "--key", "sku", "--delimiter", "semicolon")
+        self.assertEqual(code, 0, errors)
+        result = json.loads(output)
+        self.assertEqual((result["delimiter"], result["headers"], result["row_count"]),
+                         ("semicolon", ["sku", "description", "unit_price", "warehouse"], 3))
+        _, output, _ = self.call("records", str(result["id"]))
+        self.assertEqual([row["data"]["description"] for row in json.loads(output)],
+                         ["Hex bolts, M8", "Washers, M8", "Lock nuts; nylon insert"])
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.call("import", "parts", source, "--key", "sku", "--delimiter", ";")
+        self.assertEqual(raised.exception.code, 2)
+
     def test_records_issue_option_lists_rows_with_that_code(self):
         _, output, _ = self.import_example("suppliers-messy.csv")
         identifier = str(json.loads(output)["id"])
