@@ -30,7 +30,9 @@ and prints the results as JSON. Two supplier exports differ by one moved, one
 removed and one added supplier. A third, messy export is flagged and left out
 of the comparison. An invoice file has an amount and a due date that fail
 their column types, and a contacts file has a missing email, a malformed
-supplier ID and an unexpected region.
+supplier ID and an unexpected region. A parts file separated by semicolons,
+as many European spreadsheet exports are, keeps the commas in its prices and
+descriptions.
 
 ## Usage
 
@@ -61,6 +63,7 @@ python3 -m datatrail import contacts examples/contacts.csv --key contact_id \
   --required email --allow region:east --allow region:west \
   --pattern 'supplier_id:S[0-9]{3}'
 python3 -m datatrail records 5 --flagged
+python3 -m datatrail import parts examples/parts-eu.csv --key sku --delimiter semicolon
 ```
 
 The IDs above assume a fresh database; use the IDs your imports return. Every
@@ -95,6 +98,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/datasets/{name}/imports?key=column&source_name=file.csv` | Upload raw CSV bytes |
+| POST | `/datasets/{name}/imports?key=column&delimiter=semicolon` | Upload a file separated by semicolons, tabs or pipes |
 | POST | `/datasets/{name}/imports?key=column&type=amount:decimal` | Upload with column type checks |
 | POST | `/datasets/{name}/imports?key=column&required=email&allow=region:east` | Upload with value rules |
 | GET | `/datasets` | List datasets |
@@ -151,7 +155,8 @@ local one.
 
 ## Import rules
 
-- UTF-8 CSV with an optional BOM, comma delimiter and standard quoting.
+- UTF-8 CSV with an optional BOM and standard quoting, separated by commas
+  unless the import names another delimiter (below).
 - At most 5 MiB, 50,000 data records and 64 columns. Column names must be
   nonempty, unique after trimming and at most 128 characters. Very large fields
   also hit Python's CSV field size limit.
@@ -177,6 +182,32 @@ local one.
   import with `replayed: true`, keeping its first source name and timestamp.
   Any other change, even whitespace, creates a new version. Versions follow
   import order, not dates inside the files.
+
+### Delimiters
+
+`import --delimiter NAME` (`delimiter=` in the API) reads a file whose fields
+are separated by something other than commas. `comma` is the default; the
+others are `semicolon`, `tab` and `pipe`. Names are used instead of characters
+because `;` and tabs are awkward to pass in a shell or a URL.
+
+- The delimiter belongs to the file, not the dataset, so a supplier can switch
+  from commas to semicolons between exports. Values are compared after
+  parsing, so the switch alone changes no keys in `diff`, `changes` or
+  `history`. `show`, `imports` and import responses include `delimiter`, and
+  older imports show `comma`.
+- Quoting is the same for every delimiter: a field containing the delimiter, a
+  quote or a line break is wrapped in double quotes. Other separators need no
+  quoting, so `Hex bolts, M8` is one field in a semicolon file.
+- There is no automatic detection, since a wrong guess would split every row
+  differently and still look valid. When the key column is missing because the
+  whole header was read as one column, the error names the delimiters that
+  header contains, for example "set the delimiter to semicolon".
+- Importing the same bytes with a different delimiter is a conflict (`409`)
+  rather than a retry, since they would be split into different records.
+- CSV exports are always comma-separated, whatever the imports used, and
+  `/imports/{id}/source` returns the original bytes as they were. A decimal
+  comma such as `0,42` is still text; the `decimal` type only accepts a
+  decimal point.
 
 ## Column types
 

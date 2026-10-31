@@ -43,10 +43,13 @@ def main():
                        "--allow", "region:east", "--allow", "region:west", "--pattern", "supplier_id:S[0-9]{3}",
                        expected=1)
         failures = cli("records", str(contacts["id"]), "--flagged")
+        parts = cli("import", "parts", "examples/parts-eu.csv", "--key", "sku", "--delimiter", "semicolon")
+        semicolon = cli("records", str(parts["id"]))
         print(json.dumps({"comparison": comparison, "flagged_records": flags, "issue_counts": issues,
                           "supplier_trail": trail, "supplier_history": history, "latest_changes": latest,
                           "supplier_summary": summary,
-                          "invalid_values": invalid, "rule_failures": failures, "changes_csv": export}, indent=2))
+                          "invalid_values": invalid, "rule_failures": failures, "changes_csv": export,
+                          "semicolon_records": semicolon}, indent=2))
 
 
 if __name__ == "__main__":

@@ -304,6 +304,7 @@ class CliTests(unittest.TestCase):
                          [(3, ["amount"]), (4, ["due_date"])])
         self.assertEqual([(row["number"], row["failed_rules"]) for row in demo["rule_failures"]], [
             (2, {"email": ["required"]}), (3, {"supplier_id": ["pattern"]}), (4, {"region": ["allowed"]})])
+        self.assertEqual([row["data"]["unit_price"] for row in demo["semicolon_records"]], ["0,42", "0,05", "0,31"])
         self.assertEqual(demo["changes_csv"][:2], [["key", "kind", "field", "before", "after", "before_record",
                                                     "after_record"], ["S002", "changed", "city", "Boston", "Chicago",
                                                                       "2", "2"]])
