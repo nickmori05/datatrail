@@ -49,6 +49,8 @@ def parser():
     history = commands.add_parser("history", help="Show how one key's values changed across clean snapshots")
     history.add_argument("dataset")
     history.add_argument("key")
+    verify = commands.add_parser("verify", help="Check a dataset's saved imports against their original bytes")
+    verify.add_argument("dataset")
     diff = commands.add_parser("diff", help="Compare two clean snapshots of the same dataset")
     diff.add_argument("before", type=int)
     diff.add_argument("after", type=int)
@@ -64,7 +66,7 @@ def parser():
         command.add_argument("--spreadsheet", action="store_true",
                              help="With --format csv, add a byte order mark and escape values that spreadsheets "
                                   "would run as formulas")
-    for command in (datasets, imports, summary, records, trace, history, diff, changes):
+    for command in (datasets, imports, summary, records, trace, history, verify, diff, changes):
         # None means "not given", so a CSV export can reject explicit pagination.
         command.add_argument("--limit", type=int, help="Results per page, 1–1000 (default 100)")
         command.add_argument("--offset", type=int, help="Results to skip (default 0)")
@@ -120,6 +122,9 @@ def main(argv=None):
             result = store.datasets(args.limit, args.offset)
         elif args.command == "imports":
             result = store.imports(args.dataset, args.limit, args.offset)
+        elif args.command == "verify":
+            result = store.verify(args.dataset, args.limit, args.offset)
+            code = 1 if result["failed"] else 0
         elif args.command == "summary":
             result = store.summary(args.dataset, args.limit, args.offset)
         elif args.command == "show":

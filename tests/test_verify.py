@@ -1,5 +1,6 @@
-from contextlib import closing
+from contextlib import closing, redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -7,7 +8,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
 from datatrail import verify
+from datatrail.__main__ import main
+from datatrail.api import create_app
 from datatrail.errors import InvalidInput, NotFound
 from datatrail.store import Store
 
@@ -16,7 +21,7 @@ CLEAN = b"id,name,qty\nA,Ada,1\nB,Bob,2\nC,Cy,3\n"
 FLAGGED = b"id,name,qty\nA,Ada,1\nA,Al,x\n,Nobody,2\nB,Bob\nC,,3\n"
 
 
-class VerifyTests(unittest.TestCase):
+class VerifyTestCase(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -30,6 +35,8 @@ class VerifyTests(unittest.TestCase):
         with closing(self.store.connect()) as connection, connection:
             connection.execute(statement, params)
 
+
+class VerifyTests(VerifyTestCase):
     def problems(self, identifier):
         result, = [item for item in self.store.verify("parts")["imports"] if item["id"] == identifier]
         self.assertEqual(result["verified"], not result["problems"])
@@ -134,6 +141,41 @@ class VerifyTests(unittest.TestCase):
         for limit, offset in ((0, 0), (1001, 0), (1, -1)):
             with self.subTest(limit=limit, offset=offset), self.assertRaises(InvalidInput):
                 self.store.verify("parts", limit, offset)
+
+
+class VerifyInterfaceTests(VerifyTestCase):
+    def call(self, *args):
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            code = main(["--database", str(self.database), *args])
+        return code, output.getvalue(), errors.getvalue()
+
+    def test_cli_exits_one_when_an_import_fails_verification(self):
+        code, output, errors = self.call("verify", "parts")
+        self.assertEqual((code, json.loads(output)["failed"]), (0, 0), errors)
+        self.execute("UPDATE imports SET sha256 = ? WHERE id = ?", "0" * 64, self.clean["id"])
+        code, output, _ = self.call("verify", "parts", "--limit", "1")
+        self.assertEqual((code, json.loads(output)["checked"]), (0, 1))
+        code, output, _ = self.call("verify", "parts")
+        self.assertEqual(code, 1)
+        self.assertEqual([item["verified"] for item in json.loads(output)["imports"]], [True, False])
+        for args in (("verify", "missing"), ("verify", "parts", "--limit", "0")):
+            code, output, errors = self.call(*args)
+            self.assertEqual((code, output), (2, ""))
+            self.assertTrue(errors.startswith("Error:"))
+
+    def test_api_reports_problems_with_a_success_status(self):
+        client = self.enterContext(TestClient(create_app(self.database)))
+        self.execute("DELETE FROM records WHERE import_id = ? AND number = 2", self.clean["id"])
+        response = client.get("/datasets/parts/verify", params={"offset": 1})
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual((result["checked"], result["failed"], result["offset"]), (1, 1, 1))
+        problem, = result["imports"][0]["problems"]
+        self.assertEqual((problem["check"], problem["records"]), ("records", [2]))
+        self.assertEqual(client.get("/datasets/missing/verify").status_code, 404)
+        self.assertEqual(client.get("/datasets/parts/verify", params={"limit": 0}).status_code, 422)
+        self.assertIn("/datasets/{dataset}/verify", client.get("/openapi.json").json()["paths"])
 
 
 if __name__ == "__main__":
