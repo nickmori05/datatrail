@@ -169,6 +169,10 @@ def create_app(database: Path | None = None) -> FastAPI:
                 offset: int = Query(default=0, ge=0)):
         return store.history(dataset, key, limit, offset)
 
+    @app.get("/datasets/{dataset}/verify")
+    def verify(dataset: str, limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
+        return store.verify(dataset, limit, offset)
+
     @app.get("/datasets/{dataset}/changes", responses=CSV_RESPONSE)
     def changes(dataset: str, request: Request, limit: int = Query(default=100, ge=1, le=1000),
                 offset: int = Query(default=0, ge=0), kind: list[Literal[CHANGE_KINDS]] = Query(default=[]),

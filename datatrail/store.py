@@ -15,6 +15,7 @@ from .errors import Conflict, InvalidInput, NotFound
 from .ingest import ISSUE_CODES, parse_csv
 from .rules import parse_column_types, parse_rules, saved_rules
 from .summary import dataset_summary
+from .verify import verify_import
 from .versions import select_versions
 
 
@@ -222,6 +223,40 @@ class Store:
         check_page(limit, offset)
         with closing(self.connect()) as connection:
             return dataset_summary(connection, dataset, limit, offset)
+
+    def verify(self, dataset: str, limit=100, offset=0) -> dict:
+        """Check a page of a dataset's imports, newest first, against their saved source bytes.
+
+        Each import's SHA-256 is recomputed and its source parsed again with the dataset's rules; any header,
+        count or record that differs from what was saved is listed in its `problems`.
+        """
+        check_page(limit, offset)
+        with closing(self.connect()) as connection:
+            self._dataset(connection, dataset)
+            settings = connection.execute(
+                "SELECT key_column, column_types_json, rules_json FROM datasets WHERE name = ?", (dataset,)
+            ).fetchone()
+            identifiers = [row["id"] for row in connection.execute(
+                """SELECT i.id FROM imports i JOIN datasets d ON d.id = i.dataset_id WHERE d.name = ?
+                   ORDER BY i.version DESC LIMIT ? OFFSET ?""", (dataset, limit, offset))]
+        types = json.loads(settings["column_types_json"])
+        rules = saved_rules(json.loads(settings["rules_json"]))
+        results = []
+        for identifier in identifiers:
+            # One source at a time, each on a short connection, so memory and locks stay bounded.
+            with closing(self.connect()) as connection:
+                row = connection.execute(
+                    """SELECT id, version, source_name, sha256, imported_at, headers_json, row_count, accepted_count,
+                       rejected_count, source FROM imports WHERE id = ?""", (identifier,)).fetchone()
+            saved = {name: row[name] for name in row.keys() if name not in ("headers_json", "source")}
+            saved["headers"] = json.loads(row["headers_json"])
+            problems = verify_import(self.connect, saved, bytes(row["source"]), settings["key_column"], types, rules,
+                                     RECORD_BATCH)
+            results.append({name: saved[name] for name in ("id", "version", "source_name", "sha256", "imported_at")}
+                           | {"verified": not problems, "problems": problems})
+        failed = sum(not result["verified"] for result in results)
+        return {"dataset": dataset, "checked": len(results), "failed": failed, "imports": results, "limit": limit,
+                "offset": offset}
 
     def _dataset(self, connection, dataset: str):
         """Raise NotFound unless the dataset exists."""

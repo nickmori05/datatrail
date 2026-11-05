@@ -41,6 +41,7 @@ python3 -m datatrail import suppliers examples/suppliers-before.csv --key suppli
 python3 -m datatrail import suppliers examples/suppliers-after.csv --key supplier_id
 python3 -m datatrail datasets
 python3 -m datatrail imports suppliers
+python3 -m datatrail verify suppliers
 python3 -m datatrail show 1
 python3 -m datatrail diff 1 2
 python3 -m datatrail changes suppliers
@@ -70,8 +71,8 @@ The database is `.local/datatrail.sqlite3` in the working directory, which Git
 ignores. Set `DATATRAIL_DB`, or put `--database PATH` before the command, to use
 another file.
 
-Exit codes: `0` success, `1` an import was saved with flagged rows, `2` invalid
-input, a missing resource, a conflict or a storage error, `130` interrupted.
+Exit codes: `0` success, `1` an import was saved with flagged rows or `verify`
+found a problem, `2` invalid input, a missing resource, a conflict or a storage error, `130` interrupted.
 
 ### HTTP API
 
@@ -100,6 +101,7 @@ Interactive docs are at `http://127.0.0.1:8000/docs`. The API reads the same
 | GET | `/datasets` | List datasets |
 | GET | `/datasets/{name}/imports` | List snapshots, newest first |
 | GET | `/datasets/{name}/summary` | Quality and change counts for each version, newest first |
+| GET | `/datasets/{name}/verify` | Check each import's saved data against its original bytes |
 | GET | `/imports/{id}` | Import metadata and quality counts |
 | GET | `/imports/{id}/records?flagged=true` | Inspect flagged rows |
 | GET | `/imports/{id}/records?issue=invalid_value` | Inspect rows with one kind of issue |
@@ -362,6 +364,7 @@ from an imported value that already started with an apostrophe.
 | `datatrail/rules.py` | Column types and value rules, and the cells each one accepts |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
+| `datatrail/verify.py` | Checking saved imports against their source bytes and a fresh parse |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
 | `datatrail/compare.py` | Key-by-key comparison of two snapshots' records, read in key order |
 | `datatrail/export.py` | CSV rows for a comparison, written in bounded chunks, optionally escaped for spreadsheets |
@@ -376,7 +379,42 @@ the key column; similar keys are never merged.
 
 There are no edit or delete operations. Hashes identify imported bytes but do
 not authenticate their source, and anyone with direct access to the database
-file can change it.
+file can change it. `verify` detects such changes; it cannot prevent them.
+
+## Verifying imports
+
+Every finding Datatrail reports comes from the records it saved at import time,
+not from rereading the files. `verify DATASET` checks that those records still
+match the original bytes kept with each import, for example after restoring a
+backup, copying the database between machines, or editing it with another
+SQLite tool. For each import, newest first, it:
+
+- recomputes the SHA-256 of the stored source and compares it with the saved one;
+- parses the source again with the dataset's key column, column types and value
+  rules, which cannot change, and compares the header, the record counts and
+  every record (line, key, raw cells, trimmed values, issue codes and failed
+  rules) with what was saved.
+
+Each import has `verified` and a list of `problems`, empty when it matches. A
+problem has a `check` (`sha256`, `parse`, `headers`, `counts` or `records`) and
+a `detail` message. `counts` lists each saved count next to the source's, and
+`records` gives how many records differ (`count`) and the first ten record
+numbers, including records missing from the database or added to it. The top
+level has `checked` and `failed`, the number of imports on the page that did not
+verify. The CLI exits with `1` when `failed` is not zero; the API returns `200`
+either way, so check `failed`. `--limit` and `--offset` page through the
+imports as for other lists.
+
+Flagged imports are checked like clean ones, since their quality report is
+saved data too. Imports from databases created before column types or value
+rules existed verify as long as they were not changed. Each source is read and
+parsed on its own, and records are read 1,000 at a time on separate short
+queries, so memory stays at what one import needs and imports are not held up.
+A check reparses every file, so it takes about as long as importing them did:
+about 0.3 s for a 50,000-record import with ten columns.
+Verification only reports differences; it does not repair them, and someone who
+can edit the database can also rewrite the source, the hash and the records
+together so that they agree.
 
 ## Development
 

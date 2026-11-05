@@ -141,10 +141,12 @@ def main():
         base = endpoint()
         assert request(base, f"/imports/{before['id']}/source", raw=True) == before_bytes
         assert request(base, upload, before_bytes)["id"] == before["id"]
+        verified = request(base, "/datasets/suppliers/verify")
+        assert (verified["checked"], verified["failed"]) == (3, 0), verified
         created = json.loads(run("exec", "-T", "api", "python", "-m", "datatrail", "import",
                                  "cli-feed", "examples/suppliers-before.csv", "--key", "supplier_id"))
         assert request(base, f"/imports/{created['id']}")["dataset"] == "cli-feed"
-        print("Container recreation, retained source bytes and shared CLI/API writes passed.", flush=True)
+        print("Container recreation, retained and verified source bytes and shared CLI/API writes passed.", flush=True)
     finally:
         run("down", "--volumes", "--remove-orphans")
         subprocess.run(["docker", "image", "rm", image], stdout=subprocess.DEVNULL,
