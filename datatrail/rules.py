@@ -4,6 +4,7 @@ from datetime import date
 import re
 
 from .errors import InvalidInput
+from .patterns import repetition_risk
 
 
 COLUMN_TYPES = ("integer", "decimal", "date")
@@ -79,6 +80,10 @@ def parse_rules(required=(), allowed=(), patterns=()) -> dict:
             re.compile(pattern)
         except re.error as error:
             raise InvalidInput(f"Pattern for column '{column}' is not a valid regular expression: {error}.") from None
+        # Checked only when a rule is saved. A pattern already stored with the dataset is compiled as it was.
+        risk = repetition_risk(pattern)
+        if risk is not None:
+            raise InvalidInput(f"Pattern for column '{column}' can take far too long: {risk}.")
         expressions[column] = pattern
     return {"required": sorted(columns),
             "allowed": {column: sorted(values) for column, values in sorted(choices.items())},
