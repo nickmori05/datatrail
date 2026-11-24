@@ -219,7 +219,12 @@ repeatable on `import` and in the upload query string:
 - Columns, values and patterns are trimmed, since cells are trimmed before they
   are checked. Matching is exact and case-sensitive; use `(?i)` in a pattern to
   ignore case. Patterns use Python's `re` syntax and must match the whole value,
-  so `S[0-9]{3}` accepts `S001` but not `S0011`. An invalid pattern is a `400`.
+  so `S[0-9]{3}` accepts `S001` but not `S0011`. An invalid pattern is a `400`,
+  as is one that nests repetition, such as `(a+)+` or `(a|aa)+`. That shape
+  makes Python try every way to split a value and can hold up the import.
+  Repeating a single piece is fine, including an optional tail such as
+  `[0-9]+(\.[0-9]+)?`, and so is a small bounded nest such as
+  `(\d{1,3}\.){3}\d{1,3}`. A backreference is rejected too.
 - Like types, allowed values and patterns only check nonempty cells. Add
   `--required` to also reject empty ones. The key column is always required, so
   naming it in `--required` is an error.
@@ -360,6 +365,7 @@ from an imported value that already started with an apostrophe.
 | --- | --- |
 | `datatrail/ingest.py` | Parse CSV bytes and assign issue codes, before any write |
 | `datatrail/rules.py` | Column types and value rules, and the cells each one accepts |
+| `datatrail/patterns.py` | Rejecting value-rule patterns whose repetition can stall an import |
 | `datatrail/store.py` | SQLite schema setup, imports and queries |
 | `datatrail/versions.py` | Choosing the clean snapshots that `changes` compares by version |
 | `datatrail/summary.py` | Per-version quality and key change counts, computed in SQLite |
@@ -428,9 +434,11 @@ check.
   numeric or date ranges, cross-column checks or locale-specific number formats.
   A dataset's key column, types and value rules cannot change; use a new dataset
   name.
-- Patterns run with Python's `re`, which has no time limit. A pattern with
-  nested repetition, such as `(a+)+$`, can take very long on some values and
-  holds up that import. Only use patterns you trust.
+- Patterns run with Python's `re`. New patterns that nest repetition are
+  rejected, as described under value rules. There is still no time limit on a
+  pattern that was accepted, including one saved before that check, so a
+  dataset that already has one keeps running it. Rules cannot be edited, so
+  the way off such a pattern is a new dataset.
 - Versions reflect import order, not dates inside the files.
 - `summary` recomputes every count on each request. Change counts run in SQLite
   without loading snapshots into Python, at roughly 15 ms per version for
